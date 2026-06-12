@@ -57,7 +57,26 @@ Uses the same OAuth flow as the Codex CLI. Auto-detects the account email and pl
 
 You can add accounts while the server is running — press **R** in the TUI to reload.
 
-> Note: the OAuth callback uses port 1455 (the only redirect the Codex OAuth client allows), so close any concurrent `codex login` first.
+> Note: the browser callback uses port 1455 (the only redirect the Codex OAuth client allows), so close any concurrent `codex login` first.
+
+### Headless servers (device-code login)
+
+On a headless box the browser callback (`http://localhost:1455`) is unreachable from your laptop, so `teamcodex login` automatically falls back to the **device-code flow** (RFC 8628) when no display is detected. You can also request it explicitly:
+
+```bash
+teamcodex login --device-auth
+```
+
+It prints a one-time code and a URL:
+
+```
+  1. On any device, open:
+       https://auth.openai.com/codex/device
+  2. Enter this one-time code (expires in 15 min):
+       JA4B-E6L6R
+```
+
+Open the URL on your laptop or phone, sign in, enter the code, and the server completes the login automatically — no port forwarding required. Force the browser flow instead with `teamcodex login --browser`.
 
 ### Import from Codex CLI
 

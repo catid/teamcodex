@@ -8,7 +8,7 @@ import { loadOrCreateConfig, loadConfig, saveConfig, atomicConfigUpdate, getConf
 import { AccountManager } from './account-manager.js';
 import { createProxyServer } from './server.js';
 import {
-  importCredentials, loginOAuth, accountInfoFromTokens,
+  importCredentials, loginOAuth, deviceCodeLogin, accountInfoFromTokens,
   refreshAccessToken, isTokenExpiringSoon, defaultCodexAuthPath,
 } from './oauth.js';
 import { TUI } from './tui.js';
@@ -263,7 +263,57 @@ async function loginCommand() {
     await loginApiCommand();
     return;
   }
+  if (args.includes('--device-auth') || args.includes('--device')) {
+    await loginDeviceCommand();
+    return;
+  }
+  if (args.includes('--browser')) {
+    await loginOAuthCommand();
+    return;
+  }
+  // On a headless box the browser flow's localhost:1455 callback is
+  // unreachable — steer those users to device-auth automatically.
+  const headless = process.platform === 'linux' &&
+    !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY;
+  if (headless) {
+    console.log('No display detected (headless) — using device-code login.');
+    console.log('(Force the browser flow with: teamcodex login --browser)');
+    await loginDeviceCommand();
+    return;
+  }
   await loginOAuthCommand();
+}
+
+async function loginDeviceCommand() {
+  const config = await loadOrCreateConfig();
+  const name = argValue('--name');
+
+  let creds;
+  try {
+    creds = await deviceCodeLogin({
+      onPrompt: ({ verificationUrl, userCode }) => {
+        const sep = '─'.repeat(52);
+        console.log(`\n${sep}`);
+        console.log('  Sign in to ChatGPT with a device code');
+        console.log(sep);
+        console.log('  1. On any device, open:');
+        console.log(`       ${verificationUrl}`);
+        console.log('  2. Enter this one-time code (expires in 15 min):');
+        console.log(`       ${userCode}`);
+        console.log(sep);
+        console.log('  Waiting for you to authorize…\n');
+      },
+    });
+  } catch (err) {
+    console.error(`Device login failed: ${err.message}`);
+    console.error('');
+    console.error('Alternatives:');
+    console.error('  teamcodex import         Import from existing Codex CLI credentials');
+    console.error('  teamcodex login --api    Add an OpenAI API key instead');
+    process.exit(1);
+  }
+
+  await upsertChatGPTAccount(config, name, creds, 'device');
 }
 
 async function loginApiCommand() {
@@ -302,8 +352,9 @@ async function loginOAuthCommand() {
     console.error(`OAuth login failed: ${err.message}`);
     console.error('');
     console.error('Alternatives:');
-    console.error('  teamcodex import         Import from existing Codex CLI credentials');
-    console.error('  teamcodex login --api    Add an OpenAI API key instead');
+    console.error('  teamcodex login --device-auth   Headless / no local browser');
+    console.error('  teamcodex import                Import from existing Codex CLI credentials');
+    console.error('  teamcodex login --api           Add an OpenAI API key instead');
     process.exit(1);
   }
 
@@ -620,7 +671,9 @@ Usage: teamcodex [command] [options]
 Commands:
   serve               Start the proxy server (default)
   import              Import credentials from Codex CLI (~/.codex/auth.json)
-  login               ChatGPT OAuth login via browser
+  login               ChatGPT OAuth login (browser; auto device-code if headless)
+  login --device-auth Device-code login (headless servers, no local browser)
+  login --browser     Force the browser/localhost-callback flow
   login --api         Add an OpenAI API key account
   env                 Print codex -c overrides to use the proxy manually
   run [args...]       Run Codex through the proxy; args pass through to codex

@@ -193,12 +193,20 @@ export async function loginOAuth() {
 
   // Exchange code for tokens
   console.log('Exchanging authorization code for tokens...');
+  return exchangeCodeForTokens(authResult.code, codeVerifier, redirectUri);
+}
+
+/**
+ * Exchange an authorization code for tokens (shared by the browser and
+ * device-code flows). Returns a normalized credentials object.
+ */
+async function exchangeCodeForTokens(code, codeVerifier, redirectUri) {
   const tokenRes = await fetch(OAUTH_TOKEN, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
       grant_type: 'authorization_code',
-      code: authResult.code,
+      code,
       redirect_uri: redirectUri,
       client_id: OAUTH_CLIENT_ID,
       code_verifier: codeVerifier,
@@ -221,6 +229,64 @@ export async function loginOAuth() {
   creds.expiresAt = info.expiresAt
     || Date.now() + (tokens.expires_in || 3600) * 1000;
   return creds;
+}
+
+/**
+ * Device authorization grant (RFC 8628) — for headless servers with no
+ * browser and no reachable localhost callback. The OpenAI auth server
+ * generates the PKCE pair; we request a user code, the user enters it on
+ * another device, we poll until authorized, then exchange for tokens.
+ *
+ * `onPrompt({ verificationUrl, userCode })` is called once the code is issued.
+ */
+export async function deviceCodeLogin({ onPrompt } = {}) {
+  const apiBase = `${OAUTH_ISSUER}/api/accounts`;
+
+  // 1. Request a user code
+  const ucRes = await fetch(`${apiBase}/deviceauth/usercode`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ client_id: OAUTH_CLIENT_ID }),
+  });
+  if (!ucRes.ok) {
+    if (ucRes.status === 404) {
+      throw new Error('device code login is not available (404 from auth server)');
+    }
+    throw new Error(`device code request failed (${ucRes.status})`);
+  }
+  const uc = await ucRes.json();
+  const deviceAuthId = uc.device_auth_id;
+  const userCode = uc.user_code || uc.usercode;
+  const interval = Math.max(5, parseInt(uc.interval, 10) || 5);
+  const verificationUrl = `${OAUTH_ISSUER}/codex/device`;
+
+  onPrompt?.({ verificationUrl, userCode });
+
+  // 2. Poll until the user authorizes (403/404 = pending), max 15 minutes
+  const tokenUrl = `${apiBase}/deviceauth/token`;
+  const deadline = Date.now() + 15 * 60 * 1000;
+  let codeResp;
+  while (true) {
+    const r = await fetch(tokenUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_auth_id: deviceAuthId, user_code: userCode }),
+    });
+    if (r.ok) { codeResp = await r.json(); break; }
+    if (r.status === 403 || r.status === 404) {
+      await r.body?.cancel();
+      if (Date.now() >= deadline) throw new Error('device auth timed out after 15 minutes');
+      const wait = Math.min(interval * 1000, deadline - Date.now());
+      await new Promise(resolve => setTimeout(resolve, wait));
+      continue;
+    }
+    const text = await r.text().catch(() => '');
+    throw new Error(`device auth failed (${r.status})${text ? ': ' + text : ''}`);
+  }
+
+  // 3. Exchange the issued code (with the server-provided verifier) for tokens
+  const redirectUri = `${OAUTH_ISSUER}/deviceauth/callback`;
+  return exchangeCodeForTokens(codeResp.authorization_code, codeResp.code_verifier, redirectUri);
 }
 
 /**
