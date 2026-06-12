@@ -11,7 +11,8 @@ const OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const OAUTH_ISSUER = 'https://auth.openai.com';
 const OAUTH_AUTHORIZE = `${OAUTH_ISSUER}/oauth/authorize`;
 const OAUTH_TOKEN = `${OAUTH_ISSUER}/oauth/token`;
-const OAUTH_SCOPES = 'openid profile email offline_access';
+// Matches the Codex CLI's authorize request exactly
+const OAUTH_SCOPES = 'openid profile email offline_access api.connectors.read api.connectors.invoke';
 // The Codex client only allows localhost:1455 as a redirect URI
 const OAUTH_CALLBACK_PORT = 1455;
 
@@ -95,14 +96,15 @@ export async function refreshAccessToken(refreshToken, endpoint = OAUTH_TOKEN) {
         await new Promise(resolve => setTimeout(resolve, delay));
       }
 
+      // Matches the Codex CLI's refresh request exactly: a JSON body with
+      // client_id / grant_type / refresh_token and no scope field.
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          client_id: OAUTH_CLIENT_ID,
           grant_type: 'refresh_token',
           refresh_token: refreshToken,
-          client_id: OAUTH_CLIENT_ID,
-          scope: 'openid profile email',
         }),
       });
 
@@ -117,6 +119,9 @@ export async function refreshAccessToken(refreshToken, endpoint = OAUTH_TOKEN) {
 
       const data = await res.json();
       const accessToken = data.access_token;
+      if (!accessToken) {
+        throw new Error('Token refresh response had no access_token');
+      }
       const claims = parseJwtClaims(accessToken);
       return {
         accessToken,

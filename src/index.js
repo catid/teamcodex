@@ -3,8 +3,7 @@
 import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { dirname } from 'node:path';
 import { loadOrCreateConfig, loadConfig, saveConfig, atomicConfigUpdate, getConfigPath } from './config.js';
 import { AccountManager } from './account-manager.js';
 import { createProxyServer } from './server.js';

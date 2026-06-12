@@ -160,14 +160,19 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
     // Strip accept-encoding: Node fetch auto-decompresses, which would
     // mismatch the Content-Encoding header we forward to the client
     if (lk === 'accept-encoding') continue;
+    // Let fetch recompute content-length from the body we pass it; forwarding
+    // the client's value risks a mismatch error in undici
+    if (lk === 'content-length') continue;
     headers[key] = value;
   }
 
-  if (account.type === 'chatgpt') {
-    headers['authorization'] = `Bearer ${account.credential}`;
-    if (account.accountId) headers['chatgpt-account-id'] = account.accountId;
+  // Always replace the client's credentials with the active account's. Never
+  // let the client's own chatgpt-account-id leak through with our token — if
+  // we don't have an account id, drop it so the backend uses the token's own.
+  headers['authorization'] = `Bearer ${account.credential}`;
+  if (account.type === 'chatgpt' && account.accountId) {
+    headers['chatgpt-account-id'] = account.accountId;
   } else {
-    headers['authorization'] = `Bearer ${account.credential}`;
     delete headers['chatgpt-account-id'];
   }
 
@@ -210,15 +215,14 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
     }
     accountManager.updateQuota(account.index, rateLimitHeaders);
 
-    // 401 on a ChatGPT account: force a token refresh and retry once
+    // 401 on a ChatGPT account: force a token refresh and retry. If the
+    // refresh fails the account is marked 'error' and getActiveAccount will
+    // route the retry to a different account.
     if (upstreamRes.status === 401 && account.type === 'chatgpt' && retryCount < maxRetries) {
       await upstreamRes.body?.cancel();
       if (logDir) logSections.push('=== RESPONSE 401 — forcing token refresh ===');
       console.log(`[TeamCodex] 401 on "${account.name}" — forcing token refresh`);
       await accountManager.ensureTokenFresh(account.index, true);
-      if (account.status === 'error') {
-        return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir);
-      }
       return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir);
     }
 
