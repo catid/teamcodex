@@ -1,0 +1,28 @@
+{
+  "name": "teamcodex",
+  "version": "1.0.0",
+  "description": "Multi-account Codex proxy with automatic quota-based rotation",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "teamcodex": "src/index.js"
+  },
+  "files": [
+    "src/"
+  ],
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "keywords": [
+    "codex",
+    "openai",
+    "chatgpt",
+    "proxy",
+    "load-balancer",
+    "multi-account"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

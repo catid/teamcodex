@@ -1,0 +1,28 @@
+{
+  "proxy": {
+    "port": 1456,
+    "apiKey": "tcx-change-me-to-a-secret"
+  },
+  "upstream": "https://chatgpt.com",
+  "apiUpstream": "https://api.openai.com",
+  "switchThreshold": 0.98,
+  "accounts": [
+    {
+      "name": "primary-pro",
+      "type": "chatgpt",
+      "importFrom": "~/.codex/auth.json"
+    },
+    {
+      "name": "secondary-pro",
+      "type": "chatgpt",
+      "accessToken": "eyJ...your-access-token",
+      "refreshToken": "rt.1...your-refresh-token",
+      "idToken": "eyJ...your-id-token"
+    },
+    {
+      "name": "api-fallback",
+      "type": "apikey",
+      "apiKey": "sk-your-api-key"
+    }
+  ]
+}
