@@ -83,6 +83,14 @@ install_repo() {
   npm install --prefix "$target"
 }
 
+install_repo_bin() {
+  local name="$1"
+  local target="$ROOT/$name"
+
+  echo "Installing $name CLI..."
+  npm install --global "$target"
+}
+
 require_command git
 require_command npm
 
@@ -90,6 +98,7 @@ for repo in "${REPOS[@]}"; do
   IFS="|" read -r name url branch <<<"$repo"
   clone_or_update "$name" "$url" "$branch"
   install_repo "$name"
+  install_repo_bin "$name"
 done
 
 echo
