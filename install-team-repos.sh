@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 REPOS=(
-  "teamcodex|https://github.com/catid/teamcodex.git"
-  "teamclaude|https://github.com/catid/teamclaude.git"
+  "teamcodex|https://github.com/catid/teamcodex.git|"
+  "teamclaude|https://github.com/catid/teamclaude.git|catid"
 )
 
 require_command() {
@@ -40,6 +40,7 @@ same_origin() {
 clone_or_update() {
   local name="$1"
   local url="$2"
+  local branch="$3"
   local target="$ROOT/$name"
 
   if [[ -d "$target/.git" ]]; then
@@ -53,13 +54,24 @@ clone_or_update() {
 
     echo "Updating $name..."
     git -C "$target" fetch --prune
+    if [[ -n "$branch" ]]; then
+      if git -C "$target" show-ref --verify --quiet "refs/heads/$branch"; then
+        git -C "$target" switch "$branch"
+      else
+        git -C "$target" switch --track "origin/$branch"
+      fi
+    fi
     git -C "$target" pull --ff-only
   elif [[ -e "$target" ]]; then
     echo "error: $target already exists but is not a git checkout" >&2
     exit 1
   else
     echo "Cloning $name..."
-    git clone "$url" "$target"
+    if [[ -n "$branch" ]]; then
+      git clone --branch "$branch" "$url" "$target"
+    else
+      git clone "$url" "$target"
+    fi
   fi
 }
 
@@ -75,8 +87,8 @@ require_command git
 require_command npm
 
 for repo in "${REPOS[@]}"; do
-  IFS="|" read -r name url <<<"$repo"
-  clone_or_update "$name" "$url"
+  IFS="|" read -r name url branch <<<"$repo"
+  clone_or_update "$name" "$url" "$branch"
   install_repo "$name"
 done
 
