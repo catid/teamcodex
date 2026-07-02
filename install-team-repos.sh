@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 REPOS=(
-  "teamcodex|https://github.com/catid/teamcodex.git|"
-  "teamclaude|https://github.com/catid/teamclaude.git|catid"
+  "teamcodex|https://github.com/catid/teamcodex.git|main"
+  "teamclaude|https://github.com/catid/teamclaude.git|master"
 )
 
 require_command() {
