@@ -11,6 +11,9 @@ const HOP_BY_HOP_HEADERS = new Set([
 // Wait-and-retry on 429 only up to this long; longer means quota exhaustion,
 // so switch accounts instead.
 const MAX_RETRY_WAIT_SECONDS = 120;
+const MAX_SHORT_429_RETRIES_PER_ACCOUNT = 2;
+const DEFAULT_EMBEDDED_429_RETRY_SECONDS = 3600;
+const EMBEDDED_429_RE = /\b(?:429|too many requests|rate.?limit|exceeded retry limit)\b/i;
 
 export function createProxyServer(accountManager, config, hooks = {}) {
   const upstream = config.upstream || 'https://chatgpt.com';
@@ -118,7 +121,7 @@ function buildUpstreamUrl(account, reqUrl, upstreams) {
   return `${upstreams.upstream}${reqUrl}`;
 }
 
-async function forwardRequest(req, res, body, accountManager, upstreams, retryCount, hooks, reqId, ctx, logDir) {
+async function forwardRequest(req, res, body, accountManager, upstreams, retryCount, hooks, reqId, ctx, logDir, retryState = {}) {
   const maxRetries = accountManager.accounts.length;
 
   // Select account
@@ -143,12 +146,16 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
 
   // Track which account handles this request
   ctx.account = account.name;
+  if (retryState.accountIndex !== account.index) {
+    retryState.accountIndex = account.index;
+    retryState.short429Retries = 0;
+  }
   hooks.onRequestRouted?.(reqId, { account: account.name });
 
   // Refresh token if needed
   await accountManager.ensureTokenFresh(account.index);
   if (account.status === 'error' && retryCount < maxRetries) {
-    return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir);
+    return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir, retryState);
   }
 
   // Build upstream request headers
@@ -223,12 +230,13 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
       if (logDir) logSections.push('=== RESPONSE 401 — forcing token refresh ===');
       console.log(`[TeamCodex] 401 on "${account.name}" — forcing token refresh`);
       await accountManager.ensureTokenFresh(account.index, true);
-      return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir);
+      return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir, retryState);
     }
 
     // On 429: short retry-after means a transient rate limit — wait and retry
-    // the same account. Long (or missing) retry-after means the usage window
-    // is exhausted — mark the account and switch to the next one.
+    // the same account briefly. If it keeps happening, treat the account as
+    // throttled and switch. Long (or missing) retry-after means the usage
+    // window is exhausted — mark the account and switch to the next one.
     if (upstreamRes.status === 429) {
       const retryAfterHdr = parseInt(upstreamRes.headers.get('retry-after'), 10);
       await upstreamRes.body?.cancel();
@@ -239,28 +247,30 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
       const waitSecs = !isNaN(retryAfterHdr)
         ? retryAfterHdr
         : resetAt
-          ? Math.ceil((resetAt - Date.now()) / 1000)
+          ? Math.max(0, Math.ceil((resetAt - Date.now()) / 1000))
           : null;
 
-      if (waitSecs != null && waitSecs <= MAX_RETRY_WAIT_SECONDS) {
+      if (waitSecs != null && waitSecs <= MAX_RETRY_WAIT_SECONDS &&
+          retryState.short429Retries < MAX_SHORT_429_RETRIES_PER_ACCOUNT) {
+        retryState.short429Retries++;
         if (logDir) {
           logSections.push(`=== RESPONSE 429 — waiting ${waitSecs}s ===\n${formatHeaders(upstreamRes.headers)}`);
         }
-        console.log(`[TeamCodex] 429 on "${account.name}" — waiting ${waitSecs}s before retry`);
+        console.log(`[TeamCodex] 429 on "${account.name}" — waiting ${waitSecs}s before retry (${retryState.short429Retries}/${MAX_SHORT_429_RETRIES_PER_ACCOUNT})`);
         await new Promise(resolve => setTimeout(resolve, waitSecs * 1000));
         // Client may have disconnected during the wait
         if (res.destroyed) return;
-        return forwardRequest(req, res, body, accountManager, upstreams, retryCount, hooks, reqId, ctx, logDir);
+        return forwardRequest(req, res, body, accountManager, upstreams, retryCount, hooks, reqId, ctx, logDir, retryState);
       }
 
       // Usage limit reached — throttle this account until reset and switch
-      accountManager.markRateLimited(account.index, waitSecs ?? 3600);
+      accountManager.markRateLimited(account.index, Math.max(1, waitSecs ?? 3600));
       if (logDir) {
         logSections.push(`=== RESPONSE 429 — usage limit, switching account ===\n${formatHeaders(upstreamRes.headers)}`);
         writeRequestLog(logDir, reqId, logSections);
       }
       if (retryCount < maxRetries) {
-        return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir);
+        return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir, retryState);
       }
       ctx.status = 429;
       res.writeHead(429, { 'Content-Type': 'application/json', 'retry-after': String(waitSecs ?? 3600) });
@@ -312,7 +322,7 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
       }
     } else {
       const buf = Buffer.from(await upstreamRes.arrayBuffer());
-      extractUsageFromBody(buf, account.index, accountManager);
+      inspectResponseBody(buf, account.index, accountManager);
       if (logDir) {
         try {
           logSections.push(`=== RESPONSE BODY ===\n${JSON.stringify(JSON.parse(buf.toString()), null, 2)}`);
@@ -344,7 +354,7 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
 
     if (retryCount < maxRetries && !res.headersSent) {
       account.status = 'error';
-      return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir);
+      return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir, retryState);
     }
     ctx.status = 502;
 
@@ -364,6 +374,7 @@ async function streamResponse(webStream, res, accountIndex, accountManager, stre
   const reader = webStream.getReader();
   const decoder = new TextDecoder();
   let sseBuffer = '';
+  const streamState = { embedded429Seen: false };
 
   try {
     while (true) {
@@ -381,13 +392,13 @@ async function streamResponse(webStream, res, accountIndex, accountManager, stre
       // Capture for logging
       if (streamLog) streamLog.push(text);
 
-      // Parse SSE events for usage tracking
+      // Parse SSE events for usage and embedded rate-limit failures
       sseBuffer += text;
       const events = sseBuffer.split('\n\n');
       sseBuffer = events.pop(); // keep incomplete event
 
       for (const event of events) {
-        parseSSEUsage(event, accountIndex, accountManager);
+        inspectSSEEvent(event, accountIndex, accountManager, streamState);
       }
 
       // Handle backpressure — also bail out if client disconnects,
@@ -403,7 +414,7 @@ async function streamResponse(webStream, res, accountIndex, accountManager, stre
 
     // Parse any remaining buffer
     if (sseBuffer.trim()) {
-      parseSSEUsage(sseBuffer, accountIndex, accountManager);
+      inspectSSEEvent(sseBuffer, accountIndex, accountManager, streamState);
     }
   } finally {
     // Cancel upstream reader to stop consuming data nobody needs
@@ -412,30 +423,112 @@ async function streamResponse(webStream, res, accountIndex, accountManager, stre
   }
 }
 
-function parseSSEUsage(event, accountIndex, accountManager) {
-  const dataLine = event.split('\n').find(l => l.startsWith('data: '));
-  if (!dataLine) return;
+function inspectSSEEvent(event, accountIndex, accountManager, state) {
+  const dataLines = event.split('\n')
+    .filter(l => l.startsWith('data: '))
+    .map(l => l.slice(6));
+  if (dataLines.length === 0) return;
 
   try {
-    const data = JSON.parse(dataLine.slice(6));
-    const usage = data.type === 'response.completed' ? data.response?.usage : null;
-    if (usage) {
-      accountManager.updateUsage(accountIndex, usage.input_tokens, usage.output_tokens);
-    }
+    const dataText = dataLines.join('\n');
+    if (dataText === '[DONE]') return;
+    inspectResponsePayload(JSON.parse(dataText), accountIndex, accountManager, state);
   } catch {
     // not valid JSON, skip
   }
 }
 
-function extractUsageFromBody(buffer, accountIndex, accountManager) {
+function inspectResponseBody(buffer, accountIndex, accountManager) {
   try {
-    const json = JSON.parse(buffer.toString());
-    if (json.usage) {
-      accountManager.updateUsage(accountIndex, json.usage.input_tokens, json.usage.output_tokens);
-    }
+    inspectResponsePayload(JSON.parse(buffer.toString()), accountIndex, accountManager, { embedded429Seen: false });
   } catch {
-    // not JSON or no usage
+    // not JSON
   }
+}
+
+function inspectResponsePayload(data, accountIndex, accountManager, state) {
+  const usage = data?.type === 'response.completed' ? data.response?.usage : data?.usage;
+  if (usage) {
+    accountManager.updateUsage(accountIndex, usage.input_tokens, usage.output_tokens);
+  }
+
+  if (!state.embedded429Seen && isEmbedded429Payload(data)) {
+    state.embedded429Seen = true;
+    markEmbedded429(accountIndex, accountManager);
+  }
+}
+
+function isEmbedded429Payload(data) {
+  if (!data || typeof data !== 'object') return false;
+
+  const eventType = typeof data.type === 'string' ? data.type : '';
+  const status = data.response?.status ?? data.status;
+  const hasError = Boolean(data.error || data.response?.error);
+  const isFailure = hasError ||
+    eventType.endsWith('.failed') ||
+    eventType === 'error' ||
+    status === 'failed';
+
+  if (!isFailure) return false;
+
+  const text = [
+    eventType,
+    errorDetailsToText(data.error),
+    errorDetailsToText(data.response?.error),
+    errorDetailsToText(data.message),
+    errorDetailsToText(data.response?.status_details),
+    errorDetailsToText(status),
+    errorDetailsToText(data.status_code),
+    errorDetailsToText(data.statusCode),
+    errorDetailsToText(data.statusText),
+    errorDetailsToText(data.code),
+  ].join(' ');
+
+  return EMBEDDED_429_RE.test(text);
+}
+
+function errorDetailsToText(value) {
+  if (value == null) return '';
+  if (typeof value === 'string' || typeof value === 'number') return String(value);
+  if (Array.isArray(value)) return value.map(errorDetailsToText).join(' ');
+  if (typeof value !== 'object') return '';
+
+  return [
+    'type',
+    'code',
+    'detail',
+    'details',
+    'error',
+    'errors',
+    'message',
+    'reason',
+    'status',
+    'status_code',
+    'statusCode',
+    'statusText',
+  ].map(key => errorDetailsToText(value[key])).join(' ');
+}
+
+function markEmbedded429(accountIndex, accountManager) {
+  const account = accountManager.accounts[accountIndex];
+  if (!account) return;
+
+  const retryAfter = computeAccountRetryAfter(account, DEFAULT_EMBEDDED_429_RETRY_SECONDS);
+  console.log(`[TeamCodex] Embedded 429 failure on "${account.name}" — switching accounts for ${retryAfter}s`);
+  accountManager.markRateLimited(accountIndex, retryAfter);
+}
+
+function computeAccountRetryAfter(account, fallbackSeconds) {
+  const now = Date.now();
+  const resets = [
+    account.rateLimitedUntil,
+    account.quota?.primaryReset,
+    account.quota?.secondaryReset,
+    account.quota?.resetsAt,
+  ].filter(reset => Number.isFinite(reset) && reset > now);
+
+  if (resets.length === 0) return fallbackSeconds;
+  return Math.max(1, Math.ceil((Math.min(...resets) - now) / 1000));
 }
 
 function computeRetryAfter(accounts) {
