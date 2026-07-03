@@ -96,6 +96,16 @@ export class AccountManager {
   }
 
   _isAvailable(account) {
+    return this._isUsable(account) && !this._isNearQuota(account);
+  }
+
+  /**
+   * Whether an account can be sent requests at all: not throttled by a real
+   * upstream 429, not exhausted, not errored. Being near the switch threshold
+   * does NOT make an account unusable — the threshold only expresses a
+   * preference for rotating to a fresher account when one exists.
+   */
+  _isUsable(account) {
     if (!account) return false;
 
     // Check rate limit expiry
@@ -107,9 +117,25 @@ export class AccountManager {
     }
 
     if (account.status === 'exhausted' || account.status === 'error') return false;
-    if (this._isNearQuota(account)) return false;
 
     return true;
+  }
+
+  /**
+   * Worst-case quota utilization (0-1) across all tracked windows.
+   */
+  _utilization(account) {
+    const q = account.quota;
+    let used = 0;
+    if (q.primary != null) used = Math.max(used, q.primary);
+    if (q.secondary != null) used = Math.max(used, q.secondary);
+    if (q.tokensLimit != null && q.tokensRemaining != null) {
+      used = Math.max(used, 1 - (q.tokensRemaining / q.tokensLimit));
+    }
+    if (q.requestsLimit != null && q.requestsRemaining != null) {
+      used = Math.max(used, 1 - (q.requestsRemaining / q.requestsLimit));
+    }
+    return used;
   }
 
   _isNearQuota(account) {
@@ -169,7 +195,27 @@ export class AccountManager {
       }
     }
 
-    // All accounts unavailable — find the one that resets soonest
+    // Every account is at/over the switch threshold or throttled. The
+    // threshold is only a rotation preference — the backend is the authority
+    // on quota, so keep serving from the least-utilized usable account until
+    // upstream actually 429s it (which throttles it via markRateLimited).
+    let best = null;
+    for (const account of this.accounts) {
+      if (!this._isUsable(account)) continue;
+      if (!best || this._utilization(account) < this._utilization(best)) {
+        best = account;
+      }
+    }
+
+    if (best) {
+      if (best.index !== this.currentIndex) {
+        this.currentIndex = best.index;
+        console.log(`[TeamCodex] All accounts near quota — using least-utilized "${best.name}" until upstream throttles it`);
+      }
+      return best;
+    }
+
+    // All accounts throttled/errored — find the one that resets soonest
     let soonestAccount = null;
     let soonestTime = Infinity;
 
