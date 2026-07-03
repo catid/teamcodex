@@ -8,10 +8,12 @@ const HOP_BY_HOP_HEADERS = new Set([
   'te', 'trailer', 'upgrade', 'proxy-authorization', 'proxy-authenticate',
 ]);
 
-// Wait-and-retry on 429 only up to this long; longer means quota exhaustion,
-// so switch accounts instead.
-const MAX_RETRY_WAIT_SECONDS = 120;
-const MAX_SHORT_429_RETRIES_PER_ACCOUNT = 2;
+// A 429 (HTTP or embedded) means the current account is being throttled. We
+// never wait in-proxy — holding the client connection risks the client (codex)
+// timing out and exhausting its own retries against a single throttled account.
+// Instead we mark the account rate-limited and immediately switch, exactly like
+// quota-based rotation. When a 429 carries no reset hint, back off this long.
+const DEFAULT_429_BACKOFF_SECONDS = 60;
 const DEFAULT_EMBEDDED_429_RETRY_SECONDS = 3600;
 const EMBEDDED_429_RE = /\b(?:429|too many requests|rate.?limit|exceeded retry limit)\b/i;
 
@@ -121,7 +123,7 @@ function buildUpstreamUrl(account, reqUrl, upstreams) {
   return `${upstreams.upstream}${reqUrl}`;
 }
 
-async function forwardRequest(req, res, body, accountManager, upstreams, retryCount, hooks, reqId, ctx, logDir, retryState = {}) {
+async function forwardRequest(req, res, body, accountManager, upstreams, retryCount, hooks, reqId, ctx, logDir) {
   const maxRetries = accountManager.accounts.length;
 
   // Select account
@@ -146,16 +148,12 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
 
   // Track which account handles this request
   ctx.account = account.name;
-  if (retryState.accountIndex !== account.index) {
-    retryState.accountIndex = account.index;
-    retryState.short429Retries = 0;
-  }
   hooks.onRequestRouted?.(reqId, { account: account.name });
 
   // Refresh token if needed
   await accountManager.ensureTokenFresh(account.index);
   if (account.status === 'error' && retryCount < maxRetries) {
-    return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir, retryState);
+    return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir);
   }
 
   // Build upstream request headers
@@ -230,13 +228,16 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
       if (logDir) logSections.push('=== RESPONSE 401 — forcing token refresh ===');
       console.log(`[TeamCodex] 401 on "${account.name}" — forcing token refresh`);
       await accountManager.ensureTokenFresh(account.index, true);
-      return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir, retryState);
+      return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir);
     }
 
-    // On 429: short retry-after means a transient rate limit — wait and retry
-    // the same account briefly. If it keeps happening, treat the account as
-    // throttled and switch. Long (or missing) retry-after means the usage
-    // window is exhausted — mark the account and switch to the next one.
+    // On 429: the account is being throttled. Treat it as a backoff signal —
+    // mark the account rate-limited (until its reset, if the response tells us)
+    // and immediately switch to the next account, exactly like quota-based
+    // rotation. We never wait in-proxy: sleeping here holds the client's
+    // connection, and if the client (codex) gives up during the wait we'd bail
+    // without ever switching, so it keeps hammering the same throttled account
+    // and exhausts its own retries ("exceeded retry limit, last status: 429").
     if (upstreamRes.status === 429) {
       const retryAfterHdr = parseInt(upstreamRes.headers.get('retry-after'), 10);
       await upstreamRes.body?.cancel();
@@ -249,35 +250,21 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
         : resetAt
           ? Math.max(0, Math.ceil((resetAt - Date.now()) / 1000))
           : null;
+      const backoffSecs = Math.max(1, waitSecs ?? DEFAULT_429_BACKOFF_SECONDS);
 
-      if (waitSecs != null && waitSecs <= MAX_RETRY_WAIT_SECONDS &&
-          retryState.short429Retries < MAX_SHORT_429_RETRIES_PER_ACCOUNT) {
-        retryState.short429Retries++;
-        if (logDir) {
-          logSections.push(`=== RESPONSE 429 — waiting ${waitSecs}s ===\n${formatHeaders(upstreamRes.headers)}`);
-        }
-        console.log(`[TeamCodex] 429 on "${account.name}" — waiting ${waitSecs}s before retry (${retryState.short429Retries}/${MAX_SHORT_429_RETRIES_PER_ACCOUNT})`);
-        await new Promise(resolve => setTimeout(resolve, waitSecs * 1000));
-        // Client may have disconnected during the wait
-        if (res.destroyed) return;
-        return forwardRequest(req, res, body, accountManager, upstreams, retryCount, hooks, reqId, ctx, logDir, retryState);
-      }
-
-      // Usage limit reached — throttle this account until reset and switch
-      accountManager.markRateLimited(account.index, Math.max(1, waitSecs ?? 3600));
+      accountManager.markRateLimited(account.index, backoffSecs);
       if (logDir) {
-        logSections.push(`=== RESPONSE 429 — usage limit, switching account ===\n${formatHeaders(upstreamRes.headers)}`);
+        logSections.push(`=== RESPONSE 429 — backoff ${backoffSecs}s, switching account ===\n${formatHeaders(upstreamRes.headers)}`);
         writeRequestLog(logDir, reqId, logSections);
       }
+      console.log(`[TeamCodex] 429 on "${account.name}" — backing off ${backoffSecs}s and switching account`);
       if (retryCount < maxRetries) {
-        return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir, retryState);
+        return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir);
       }
+      // Every account is throttled — surface a 429 with a retry-after so the
+      // client backs off instead of retrying immediately.
       ctx.status = 429;
-      res.writeHead(429, { 'Content-Type': 'application/json', 'retry-after': String(waitSecs ?? 3600) });
-      res.end(JSON.stringify({
-        error: { type: 'rate_limit_error', message: 'All accounts rate limited' },
-      }));
-      return;
+      return writeAllAccountsRateLimited(res, accountManager);
     }
 
     // Log response headers
@@ -320,7 +307,7 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
       }
       if (streamResult.embedded429) {
         if (!streamResult.bytesSent && retryCount < maxRetries) {
-          return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir, retryState);
+          return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir);
         }
         ctx.status = 429;
         if (!streamResult.bytesSent && !res.headersSent) {
@@ -342,7 +329,7 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
       }
       if (bodyResult.embedded429) {
         if (retryCount < maxRetries) {
-          return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir, retryState);
+          return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir);
         }
         ctx.status = 429;
         return writeAllAccountsRateLimited(res, accountManager);
@@ -372,7 +359,7 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
 
     if (retryCount < maxRetries && !res.headersSent) {
       account.status = 'error';
-      return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir, retryState);
+      return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir);
     }
     ctx.status = 502;
 
