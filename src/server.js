@@ -285,8 +285,6 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
       logSections.push(`=== RESPONSE ${upstreamRes.status} ===\n${formatHeaders(upstreamRes.headers)}`);
     }
 
-    ctx.status = upstreamRes.status;
-
     // Build response headers (skip hop-by-hop and encoding headers)
     const responseHeaders = {};
     for (const [key, value] of upstreamRes.headers.entries()) {
@@ -296,13 +294,13 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
       responseHeaders[key] = value;
     }
 
-    res.writeHead(upstreamRes.status, responseHeaders);
-
     if (!upstreamRes.body) {
       if (logDir) {
         logSections.push(`=== RESPONSE BODY ===\n(empty)`);
         writeRequestLog(logDir, reqId, logSections);
       }
+      ctx.status = upstreamRes.status;
+      res.writeHead(upstreamRes.status, responseHeaders);
       res.end();
       return;
     }
@@ -315,14 +313,25 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
 
     if (isStreaming) {
       const streamLog = logDir ? [] : null;
-      await streamResponse(upstreamRes.body, res, account.index, accountManager, streamLog);
+      const streamResult = await streamResponse(upstreamRes.body, res, upstreamRes.status, responseHeaders, account.index, accountManager, streamLog);
       if (logDir) {
         logSections.push(`=== RESPONSE BODY (streamed) ===\n${streamLog.join('')}`);
         writeRequestLog(logDir, reqId, logSections);
       }
+      if (streamResult.embedded429) {
+        if (!streamResult.bytesSent && retryCount < maxRetries) {
+          return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir, retryState);
+        }
+        ctx.status = 429;
+        if (!streamResult.bytesSent && !res.headersSent) {
+          return writeAllAccountsRateLimited(res, accountManager);
+        }
+        return;
+      }
+      ctx.status = upstreamRes.status;
     } else {
       const buf = Buffer.from(await upstreamRes.arrayBuffer());
-      inspectResponseBody(buf, account.index, accountManager);
+      const bodyResult = inspectResponseBody(buf, account.index, accountManager);
       if (logDir) {
         try {
           logSections.push(`=== RESPONSE BODY ===\n${JSON.stringify(JSON.parse(buf.toString()), null, 2)}`);
@@ -331,6 +340,15 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
         }
         writeRequestLog(logDir, reqId, logSections);
       }
+      if (bodyResult.embedded429) {
+        if (retryCount < maxRetries) {
+          return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir, retryState);
+        }
+        ctx.status = 429;
+        return writeAllAccountsRateLimited(res, accountManager);
+      }
+      ctx.status = upstreamRes.status;
+      res.writeHead(upstreamRes.status, responseHeaders);
       res.end(buf);
     }
   } catch (err) {
@@ -370,11 +388,14 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
 /**
  * Stream an SSE response to the client, parsing usage data along the way.
  */
-async function streamResponse(webStream, res, accountIndex, accountManager, streamLog) {
+async function streamResponse(webStream, res, status, headers, accountIndex, accountManager, streamLog) {
   const reader = webStream.getReader();
   const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
   let sseBuffer = '';
   const streamState = { embedded429Seen: false };
+  let bytesSent = false;
+  let shouldEnd = true;
 
   try {
     while (true) {
@@ -383,9 +404,6 @@ async function streamResponse(webStream, res, accountIndex, accountManager, stre
 
       // Client disconnected — stop reading from upstream
       if (res.destroyed) break;
-
-      // Forward chunk immediately
-      const ok = res.write(value);
 
       const text = decoder.decode(value, { stream: true });
 
@@ -398,28 +416,73 @@ async function streamResponse(webStream, res, accountIndex, accountManager, stre
       sseBuffer = events.pop(); // keep incomplete event
 
       for (const event of events) {
-        inspectSSEEvent(event, accountIndex, accountManager, streamState);
-      }
+        const eventText = `${event}\n\n`;
+        const eventResult = inspectSSEEvent(event, accountIndex, accountManager, streamState);
+        if (eventResult.embedded429) {
+          shouldEnd = false;
+          if (bytesSent) {
+            res.destroy();
+          }
+          return { embedded429: true, bytesSent };
+        }
 
-      // Handle backpressure — also bail out if client disconnects,
-      // because 'drain' will never fire on a destroyed socket
-      if (!ok) {
-        await new Promise(resolve => {
-          res.once('drain', resolve);
-          res.once('close', resolve);
-        });
-        if (res.destroyed) break;
+        bytesSent = await writeStreamChunk(res, status, headers, eventText, bytesSent);
+        if (res.destroyed) {
+          shouldEnd = false;
+          return { embedded429: false, bytesSent };
+        }
       }
     }
 
-    // Parse any remaining buffer
-    if (sseBuffer.trim()) {
-      inspectSSEEvent(sseBuffer, accountIndex, accountManager, streamState);
+    const trailing = decoder.decode();
+    if (trailing) {
+      sseBuffer += trailing;
     }
+
+    if (sseBuffer.length > 0) {
+      const eventResult = inspectSSEEvent(sseBuffer, accountIndex, accountManager, streamState);
+      if (eventResult.embedded429) {
+        shouldEnd = false;
+        if (bytesSent) {
+          res.destroy();
+        }
+        return { embedded429: true, bytesSent };
+      }
+
+      bytesSent = await writeStreamChunk(res, status, headers, sseBuffer, bytesSent);
+    }
+
+    return { embedded429: false, bytesSent };
   } finally {
     // Cancel upstream reader to stop consuming data nobody needs
     reader.cancel().catch(() => {});
-    if (!res.writableEnded) res.end();
+    if (shouldEnd && !res.writableEnded && !res.destroyed) {
+      if (!bytesSent && !res.headersSent) {
+        res.writeHead(status, headers);
+      }
+      res.end();
+    }
+  }
+
+  async function writeStreamChunk(res, status, headers, chunk, hasWritten) {
+    if (!hasWritten && !res.headersSent) {
+      res.writeHead(status, headers);
+    }
+
+    const ok = typeof chunk === 'string'
+      ? res.write(chunk)
+      : res.write(encoder.encode(chunk));
+
+    // Handle backpressure — also bail out if client disconnects,
+    // because 'drain' will never fire on a destroyed socket
+    if (!ok) {
+      await new Promise(resolve => {
+        res.once('drain', resolve);
+        res.once('close', resolve);
+      });
+    }
+
+    return true;
   }
 }
 
@@ -427,22 +490,24 @@ function inspectSSEEvent(event, accountIndex, accountManager, state) {
   const dataLines = event.split('\n')
     .filter(l => l.startsWith('data: '))
     .map(l => l.slice(6));
-  if (dataLines.length === 0) return;
+  if (dataLines.length === 0) return { embedded429: false };
 
   try {
     const dataText = dataLines.join('\n');
-    if (dataText === '[DONE]') return;
-    inspectResponsePayload(JSON.parse(dataText), accountIndex, accountManager, state);
+    if (dataText === '[DONE]') return { embedded429: false };
+    return inspectResponsePayload(JSON.parse(dataText), accountIndex, accountManager, state);
   } catch {
     // not valid JSON, skip
+    return { embedded429: false };
   }
 }
 
 function inspectResponseBody(buffer, accountIndex, accountManager) {
   try {
-    inspectResponsePayload(JSON.parse(buffer.toString()), accountIndex, accountManager, { embedded429Seen: false });
+    return inspectResponsePayload(JSON.parse(buffer.toString()), accountIndex, accountManager, { embedded429Seen: false });
   } catch {
     // not JSON
+    return { embedded429: false };
   }
 }
 
@@ -455,7 +520,10 @@ function inspectResponsePayload(data, accountIndex, accountManager, state) {
   if (!state.embedded429Seen && isEmbedded429Payload(data)) {
     state.embedded429Seen = true;
     markEmbedded429(accountIndex, accountManager);
+    return { embedded429: true };
   }
+
+  return { embedded429: false };
 }
 
 function isEmbedded429Payload(data) {
@@ -467,7 +535,10 @@ function isEmbedded429Payload(data) {
   const isFailure = hasError ||
     eventType.endsWith('.failed') ||
     eventType === 'error' ||
-    status === 'failed';
+    status === 'failed' ||
+    status === 429 ||
+    data.status_code === 429 ||
+    data.statusCode === 429;
 
   if (!isFailure) return false;
 
@@ -529,6 +600,21 @@ function computeAccountRetryAfter(account, fallbackSeconds) {
 
   if (resets.length === 0) return fallbackSeconds;
   return Math.max(1, Math.ceil((Math.min(...resets) - now) / 1000));
+}
+
+function writeAllAccountsRateLimited(res, accountManager) {
+  const status = accountManager.getStatus();
+  const retryAfter = computeRetryAfter(status.accounts);
+  res.writeHead(429, {
+    'Content-Type': 'application/json',
+    'retry-after': String(retryAfter),
+  });
+  res.end(JSON.stringify({
+    error: {
+      type: 'rate_limit_error',
+      message: `All ${accountManager.accounts.length} accounts rate limited. Retry in ${retryAfter}s.`,
+    },
+  }));
 }
 
 function computeRetryAfter(accounts) {
