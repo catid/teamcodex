@@ -10,7 +10,7 @@ Sits transparently between Codex and the ChatGPT backend, managing multiple Chat
 - **Smart 429 handling** — short rate limits wait and retry the same account; usage-limit 429s switch to the next account immediately
 - **Interactive TUI** — real-time dashboard with color-coded quota bars, reset countdowns, activity log, and keyboard controls
 - **OAuth token management** — automatically refreshes tokens nearing expiry and persists them to config
-- **Hot-reload accounts** — add accounts via `import` or `login` while the server is running, press **R** to pick them up
+- **Hot-reload accounts** — `login`, `import`, and `remove` update a running server immediately (no restart; **R** in the TUI also re-syncs)
 - **Account deduplication** — detects duplicate accounts by ChatGPT account id and keeps the most recent
 - **Request logging** — optional full request/response logging for debugging
 - **Zero dependencies** — uses only Node.js built-in modules
@@ -55,7 +55,7 @@ teamcodex login
 
 Uses the same OAuth flow as the Codex CLI. Auto-detects the account email and plan type (Plus/Pro/Team). Logging in with the same account again updates its credentials.
 
-You can add accounts while the server is running — press **R** in the TUI to reload.
+You can add or replace accounts while the server is running — it picks up the change immediately (no restart needed).
 
 > Note: the browser callback uses port 1455 (the only redirect the Codex OAuth client allows), so close any concurrent `codex login` first.
 

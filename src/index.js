@@ -2,7 +2,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { loadOrCreateConfig, loadConfig, saveConfig, atomicConfigUpdate, getConfigPath } from './config.js';
 import { AccountManager } from './account-manager.js';
@@ -127,12 +127,26 @@ async function serveCommand() {
         diskConfig.accounts[cfgIdx].expiresAt = newTokens.expiresAt;
       }
     }).catch(err => console.error(`[TeamCodex] Failed to save refreshed token: ${err.message}`));
+    // Keep the Codex CLI's own auth.json in step — codex refreshes its copy
+    // independently, and once we rotate the refresh token its stale copy
+    // fails with "refresh token was revoked. Please log out and sign in again."
+    updateCodexAuthIfMatching(account, newTokens)
+      .catch(err => console.error(`[TeamCodex] Failed to sync codex auth.json: ${err.message}`));
   });
   const port = config.proxy.port;
   const useTUI = process.stdout.isTTY && process.stdin.isTTY;
 
+  // Re-read config from disk and sync accounts into the running server.
+  // Reached from the TUI (R key) and the /teamcodex/reload endpoint that
+  // `teamcodex login/import/remove` hit after writing the config.
+  const reloadAccounts = async ({ removeMissing = false } = {}) => {
+    const diskConfig = await loadConfig();
+    if (!diskConfig) return { added: 0, updated: 0, removed: 0 };
+    return syncAccountsFromDisk(diskConfig, config, accountManager, { removeMissing });
+  };
+
   let tui = null;
-  let hooks = {};
+  const hooks = { reloadAccounts };
 
   if (useTUI) {
     tui = new TUI({
@@ -156,18 +170,12 @@ async function serveCommand() {
           return diskAcct ? { ...diskAcct, ...live } : live;
         });
       }),
-      syncAccounts: async () => {
-        const diskConfig = await loadConfig();
-        if (!diskConfig) return 0;
-        return syncAccountsFromDisk(diskConfig, config, accountManager);
-      },
+      syncAccounts: reloadAccounts,
       onQuit: () => { server.close(() => process.exit(0)); },
     });
-    hooks = {
-      onRequestStart: (id, info) => tui.onRequestStart(id, info),
-      onRequestRouted: (id, info) => tui.onRequestRouted(id, info),
-      onRequestEnd: (id, info) => tui.onRequestEnd(id, info),
-    };
+    hooks.onRequestStart = (id, info) => tui.onRequestStart(id, info);
+    hooks.onRequestRouted = (id, info) => tui.onRequestRouted(id, info);
+    hooks.onRequestEnd = (id, info) => tui.onRequestEnd(id, info);
   }
 
   const server = createProxyServer(accountManager, config, hooks);
@@ -338,6 +346,7 @@ async function loginApiCommand() {
   await saveConfig(config);
   console.log(`Added API key account "${name}"`);
   console.log(`Saved to ${getConfigPath()}`);
+  await notifyServerReload(config);
 }
 
 async function loginOAuthCommand() {
@@ -385,35 +394,122 @@ function codexOverrideArgs(port) {
 }
 
 /**
+ * Atomically write codex's auth.json — codex reloads this file at runtime,
+ * so it must never observe a partially written one.
+ */
+async function writeCodexAuth(authPath, auth) {
+  await mkdir(dirname(authPath), { recursive: true });
+  const tmpPath = `${authPath}.${process.pid}.tmp`;
+  await writeFile(tmpPath, JSON.stringify(auth, null, 2) + '\n', { mode: 0o600 });
+  await rename(tmpPath, authPath);
+}
+
+/**
  * Codex reads ChatGPT tokens from $CODEX_HOME/auth.json and refuses to start
  * without them (the proxy replaces them in-flight anyway). If the user never
  * logged into Codex itself, seed auth.json from the first proxy account.
+ *
+ * If auth.json exists but its token has gone stale, codex tries to refresh
+ * it on its own — and since the proxy rotates that account's refresh token,
+ * the stale copy fails with "refresh token was revoked. Please log out and
+ * sign in again." When the proxy config holds fresher tokens for the same
+ * account, re-seed them instead of letting codex attempt the dead refresh.
  */
 async function ensureCodexAuth(config) {
   const authPath = defaultCodexAuthPath();
+
+  let auth = null;
   try {
-    await readFile(authPath);
-    return; // codex already has credentials
+    auth = JSON.parse(await readFile(authPath, 'utf-8'));
   } catch (err) {
-    if (err.code !== 'ENOENT') return;
+    if (err.code !== 'ENOENT') return; // unreadable — leave it alone
   }
 
-  const acct = config.accounts.find(a => a.type === 'chatgpt' && a.accessToken);
-  if (!acct) return;
+  if (!auth) {
+    const acct = config.accounts.find(a => a.type === 'chatgpt' && a.accessToken);
+    if (!acct) return;
+    console.log(`Codex CLI has no credentials — seeding ${authPath} from account "${acct.name}"`);
+    await writeCodexAuth(authPath, {
+      auth_mode: 'chatgpt',
+      OPENAI_API_KEY: null,
+      tokens: {
+        id_token: acct.idToken,
+        access_token: acct.accessToken,
+        refresh_token: acct.refreshToken,
+        account_id: acct.accountId,
+      },
+      last_refresh: new Date().toISOString(),
+    });
+    return;
+  }
 
-  console.log(`Codex CLI has no credentials — seeding ${authPath} from account "${acct.name}"`);
-  await mkdir(dirname(authPath), { recursive: true });
-  await writeFile(authPath, JSON.stringify({
-    auth_mode: 'chatgpt',
-    OPENAI_API_KEY: null,
+  const tokens = auth.tokens || {};
+  const info = accountInfoFromTokens({
+    accessToken: tokens.access_token,
+    idToken: tokens.id_token,
+    accountId: tokens.account_id,
+  });
+  if (!isTokenExpiringSoon(info.expiresAt)) return; // still fresh — codex won't refresh
+
+  // Only replace tokens for an account the proxy manages — never clobber an
+  // unrelated codex login.
+  const acct = config.accounts.find(a =>
+    a.type === 'chatgpt' && a.accessToken && a.accountId && a.accountId === info.accountId);
+  if (!acct) return;
+  if (acct.expiresAt && info.expiresAt && acct.expiresAt <= info.expiresAt) return; // nothing fresher
+
+  console.log(`Codex CLI token is stale — updating ${authPath} from account "${acct.name}"`);
+  await writeCodexAuth(authPath, {
+    ...auth,
     tokens: {
-      id_token: acct.idToken,
+      ...tokens,
+      id_token: acct.idToken ?? tokens.id_token,
       access_token: acct.accessToken,
       refresh_token: acct.refreshToken,
-      account_id: acct.accountId,
+      account_id: acct.accountId ?? tokens.account_id,
     },
     last_refresh: new Date().toISOString(),
-  }, null, 2) + '\n', { mode: 0o600 });
+  });
+}
+
+/**
+ * Mirror freshly refreshed tokens into the Codex CLI's auth.json when it
+ * holds tokens for the same account. Codex reloads auth.json before
+ * refreshing (guarded reload) and skips its own refresh when the file has
+ * newer tokens — without this, codex eventually tries to refresh a rotated
+ * refresh token and dies with "refresh token was revoked".
+ */
+async function updateCodexAuthIfMatching(account, newTokens) {
+  const authPath = defaultCodexAuthPath();
+  let auth;
+  try {
+    auth = JSON.parse(await readFile(authPath, 'utf-8'));
+  } catch {
+    return; // no codex auth.json (or unreadable) — nothing to sync
+  }
+
+  const tokens = auth.tokens || {};
+  const authInfo = accountInfoFromTokens({
+    accessToken: tokens.access_token,
+    idToken: tokens.id_token,
+    accountId: tokens.account_id,
+  });
+  const acctId = account.accountId
+    || accountInfoFromTokens({ accessToken: newTokens.accessToken, idToken: newTokens.idToken }).accountId;
+  if (!acctId || authInfo.accountId !== acctId) return;
+
+  await writeCodexAuth(authPath, {
+    ...auth,
+    tokens: {
+      ...tokens,
+      id_token: newTokens.idToken ?? tokens.id_token,
+      access_token: newTokens.accessToken,
+      refresh_token: newTokens.refreshToken,
+      account_id: acctId,
+    },
+    last_refresh: new Date().toISOString(),
+  });
+  console.log(`[TeamCodex] Synced refreshed tokens to codex auth.json ("${account.name}")`);
 }
 
 async function runCommand() {
@@ -548,7 +644,12 @@ async function accountsCommand() {
       }
     }
   }
-  if (configDirty) await saveConfig(config);
+  if (configDirty) {
+    await saveConfig(config);
+    // Refreshing rotates refresh tokens — hand the fresh ones to a running
+    // server right away so its in-memory copies don't go stale.
+    await notifyServerReload(config, { removeMissing: removed > 0 });
+  }
   if (removed > 0) console.log(`Removed ${removed} duplicate account(s)\n`);
 
   for (const [i, a] of config.accounts.entries()) {
@@ -659,6 +760,7 @@ async function removeCommand() {
   config.accounts.splice(idx, 1);
   await saveConfig(config);
   console.log(`Removed account "${name}"`);
+  await notifyServerReload(config, { removeMissing: true });
 }
 
 // ── help ────────────────────────────────────────────────────
@@ -738,6 +840,38 @@ async function upsertChatGPTAccount(config, name, creds, source = 'unknown') {
 
   await saveConfig(config);
   console.log(`Saved to ${getConfigPath()}`);
+  await notifyServerReload(config);
+}
+
+/**
+ * Tell a running proxy server to reload accounts from the config file, so
+ * logins/imports/removals take effect immediately without a restart.
+ * Best-effort: silently a no-op when the server isn't running.
+ */
+async function notifyServerReload(config, { removeMissing = false } = {}) {
+  const port = config.proxy?.port;
+  if (!port) return;
+
+  const qs = removeMissing ? '?removeMissing=1' : '';
+  const headers = config.proxy?.apiKey ? { 'x-api-key': config.proxy.apiKey } : {};
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/teamcodex/reload${qs}`, {
+      method: 'POST',
+      headers,
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const parts = [];
+    if (data.added) parts.push(`${data.added} added`);
+    if (data.updated) parts.push(`${data.updated} updated`);
+    if (data.removed) parts.push(`${data.removed} removed`);
+    console.log(`Running server reloaded${parts.length ? ` (${parts.join(', ')})` : ' (no changes)'}`);
+  } catch (err) {
+    const code = err.code || err.cause?.code;
+    if (code === 'ECONNREFUSED') return; // server not running — it'll load the config on start
+    console.log(`Note: could not reload running server (${err.message}) — restart it or press R in the TUI`);
+  }
 }
 
 // ── config sync helpers ─────────────────────────────────────
@@ -756,10 +890,12 @@ function findConfigAccount(diskConfig, account) {
 /**
  * Sync accounts from disk config: add new accounts and refresh credentials
  * for existing ones (handles re-imported tokens, rotated API keys, etc.).
- * Returns the number of new accounts added.
+ * With removeMissing, also drops in-memory accounts no longer in the config
+ * (used by `teamcodex remove`). Returns { added, updated, removed }.
  */
-async function syncAccountsFromDisk(diskConfig, memConfig, accountManager) {
+async function syncAccountsFromDisk(diskConfig, memConfig, accountManager, { removeMissing = false } = {}) {
   let added = 0;
+  let updated = 0;
   for (const diskAcct of diskConfig.accounts) {
     const matchById = diskAcct.accountId &&
       memConfig.accounts.findIndex(a => a.accountId === diskAcct.accountId);
@@ -806,7 +942,7 @@ async function syncAccountsFromDisk(diskConfig, memConfig, accountManager) {
 
     if (freshCred.accessToken) {
       const changed = mgr.credential !== freshCred.accessToken ||
-        mgr.refreshToken !== freshCred.refreshToken;
+        (mgr.refreshToken ?? null) !== (freshCred.refreshToken ?? null);
       // Don't overwrite in-memory credentials with staler ones from disk
       // (e.g. after a TUI import updated the AM before saveConfig wrote to disk)
       const diskIsStaler = freshCred.expiresAt && mgr.expiresAt &&
@@ -814,14 +950,34 @@ async function syncAccountsFromDisk(diskConfig, memConfig, accountManager) {
       if (changed && !diskIsStaler) {
         accountManager.updateAccountTokens(mgr.index, freshCred);
         console.log(`[TeamCodex] Refreshed credentials for "${mgr.name}"`);
+        updated++;
       }
     } else if (freshCred.apiKey && mgr.credential !== freshCred.apiKey) {
       mgr.credential = freshCred.apiKey;
       if (mgr.status === 'error') mgr.status = 'active';
       console.log(`[TeamCodex] Updated API key for "${mgr.name}"`);
+      updated++;
     }
   }
-  return added;
+
+  let removed = 0;
+  if (removeMissing) {
+    // memConfig.accounts and accountManager.accounts are parallel arrays —
+    // remove from both at the same index, back to front.
+    for (let i = memConfig.accounts.length - 1; i >= 0; i--) {
+      const a = memConfig.accounts[i];
+      const onDisk = diskConfig.accounts.some(d =>
+        (a.accountId && d.accountId === a.accountId) || d.name === a.name);
+      if (!onDisk) {
+        memConfig.accounts.splice(i, 1);
+        accountManager.removeAccount(i);
+        removed++;
+        console.log(`[TeamCodex] Removed account "${a.name}" (deleted from config)`);
+      }
+    }
+  }
+
+  return { added, updated, removed };
 }
 
 // ── helpers ─────────────────────────────────────────────────

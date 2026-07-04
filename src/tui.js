@@ -279,11 +279,13 @@ export class TUI {
 
   async _doSync() {
     try {
-      const count = await this.syncAccounts();
-      if (count > 0) {
-        this._addLog(`Synced ${count} new account(s) from config`);
+      const { added = 0, updated = 0 } = await this.syncAccounts() || {};
+      if (added > 0) {
+        this._addLog(`Synced ${added} new account(s) from config`);
+      } else if (updated > 0) {
+        this._addLog(`Refreshed credentials for ${updated} account(s)`);
       } else {
-        this._addLog('Config reloaded, credentials refreshed');
+        this._addLog('Config reloaded, no account changes');
       }
     } catch (e) {
       this._addLog(`Sync failed: ${e.message}`);

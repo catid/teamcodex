@@ -323,6 +323,18 @@ export class AccountManager {
   }
 
   /**
+   * Mark an account's credentials as rejected upstream (a 401 that a token
+   * refresh could not fix, e.g. revoked refresh token or bad API key). The
+   * account is skipped until it gets new tokens (re-login/import + reload).
+   */
+  markAuthFailed(accountIndex) {
+    const account = this.accounts[accountIndex];
+    if (!account) return;
+    account.status = 'error';
+    console.log(`[TeamCodex] Account "${account.name}" credentials rejected — switching accounts. Fix with: teamcodex login`);
+  }
+
+  /**
    * Ensure a ChatGPT account's token is fresh, refreshing if needed.
    * Pass force=true to refresh regardless of expiry (e.g. after a 401).
    * Concurrent calls for the same account coalesce into a single refresh.
@@ -348,9 +360,18 @@ export class AccountManager {
         this._onTokenRefresh?.(accountIndex, newTokens);
       } catch (err) {
         console.error(`[TeamCodex] Token refresh failed for "${account.name}": ${err.message}`);
-        // Only mark as error if the access token is actually expired;
-        // a failed proactive refresh shouldn't kill a still-valid token
-        if (!account.expiresAt || Date.now() >= account.expiresAt) {
+        // A revoked/invalid grant is permanent — stop re-attempting the
+        // refresh on every request. The access token may still work until it
+        // expires; after that the 401 path rotates to another account.
+        if (/invalid_grant|revoked|refresh failed \(40[013]\)/i.test(err.message)) {
+          account.refreshToken = null;
+        }
+        // A forced refresh means upstream already rejected the access token
+        // (401), so a future expiresAt doesn't make it usable — mark it
+        // errored now so rotation happens. Otherwise only mark error once
+        // the token actually expires; a failed proactive refresh shouldn't
+        // kill a still-valid token.
+        if (force || !account.expiresAt || Date.now() >= account.expiresAt) {
           account.status = 'error';
         }
       } finally {

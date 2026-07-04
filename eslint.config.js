@@ -14,6 +14,8 @@ export default [
         URLSearchParams: 'readonly',
         Buffer: 'readonly',
         TextDecoder: 'readonly',
+        TextEncoder: 'readonly',
+        AbortSignal: 'readonly',
         fetch: 'readonly',
       },
     },

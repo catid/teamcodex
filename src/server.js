@@ -49,6 +49,28 @@ export function createProxyServer(accountManager, config, hooks = {}) {
         return;
       }
 
+      // Reload endpoint — pick up config changes (new/replaced/removed
+      // accounts) without restarting. Called by `teamcodex login/import/remove`.
+      if (req.method === 'POST' && req.url.split('?')[0] === '/teamcodex/reload') {
+        if (!hooks.reloadAccounts) {
+          res.writeHead(501, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            error: { type: 'proxy_error', message: 'Reload not supported by this server' },
+          }));
+          return;
+        }
+        try {
+          const removeMissing = /[?&]removeMissing=1(&|$)/.test(req.url);
+          const result = await hooks.reloadAccounts({ removeMissing });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+        } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { type: 'proxy_error', message: err.message } }));
+        }
+        return;
+      }
+
       // Track request
       const reqId = ++requestCounter;
       hooks.onRequestStart?.(reqId, { method: req.method, path: req.url });
@@ -220,14 +242,24 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
     }
     accountManager.updateQuota(account.index, rateLimitHeaders);
 
-    // 401 on a ChatGPT account: force a token refresh and retry. If the
-    // refresh fails the account is marked 'error' and getActiveAccount will
-    // route the retry to a different account.
-    if (upstreamRes.status === 401 && account.type === 'chatgpt' && retryCount < maxRetries) {
+    // 401: the account's credentials were rejected. For ChatGPT accounts try
+    // a forced token refresh; if that can't produce a new token (revoked
+    // refresh token, no refresh token, API key account) mark the account
+    // auth-failed so the retry rotates to the next account instead of
+    // hammering the same dead credentials and surfacing the 401 to the client.
+    if (upstreamRes.status === 401 && retryCount < maxRetries) {
       await upstreamRes.body?.cancel();
       if (logDir) logSections.push('=== RESPONSE 401 — forcing token refresh ===');
-      console.log(`[TeamCodex] 401 on "${account.name}" — forcing token refresh`);
-      await accountManager.ensureTokenFresh(account.index, true);
+      if (account.type === 'chatgpt' && account.refreshToken) {
+        console.log(`[TeamCodex] 401 on "${account.name}" — forcing token refresh`);
+        const prevCredential = account.credential;
+        await accountManager.ensureTokenFresh(account.index, true);
+        if (account.credential === prevCredential && account.status !== 'error') {
+          accountManager.markAuthFailed(account.index);
+        }
+      } else {
+        accountManager.markAuthFailed(account.index);
+      }
       return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir);
     }
 
