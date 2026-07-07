@@ -7,7 +7,7 @@ Sits transparently between Codex and the ChatGPT backend, managing multiple Chat
 ## Features
 
 - **Automatic account rotation** — switches to the next account when the 5h or weekly usage window reaches the configured threshold (default 98%)
-- **Smart 429 handling** — short rate limits wait and retry the same account; usage-limit 429s switch to the next account immediately
+- **Smart 429 handling** — 429 responses and embedded retry-limit failures mark the current account throttled and switch accounts immediately
 - **Interactive TUI** — real-time dashboard with color-coded quota bars, reset countdowns, activity log, and keyboard controls
 - **OAuth token management** — automatically refreshes tokens nearing expiry and persists them to config
 - **Hot-reload accounts** — add accounts via `import` or `login` while the server is running, press **R** to pick them up
@@ -221,7 +221,7 @@ TEAMCODEX_CONFIG=./my-config.json teamcodex serve
 3. Tokens expiring within 5 minutes are automatically refreshed against `auth.openai.com` and persisted to config
 4. Rate limit headers from the backend (`x-codex-primary-*` = 5h window, `x-codex-secondary-*` = weekly window) track quota utilization per account
 5. When usage reaches the threshold, the proxy switches to the next available account via round-robin
-6. On 429 responses with a short `retry-after`, the proxy waits and retries the same account; usage-limit 429s mark the account throttled until its reset time and switch immediately
+6. On 429 responses or embedded retry-limit failures, the proxy marks the current account throttled until its reset hint (or a fallback backoff) and switches immediately
 7. Transient network errors (connection reset, timeout) drop the connection so the client can retry
 8. If all accounts are exhausted, returns 429 with the soonest reset time
 9. Codex manages its own token lifecycle independently (refreshes go directly to `auth.openai.com`); the proxy swaps credentials in-flight, so what Codex stores never matters

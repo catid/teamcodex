@@ -519,27 +519,43 @@ function isEmbedded429Payload(data) {
   const eventType = typeof data.type === 'string' ? data.type : '';
   const status = data.response?.status ?? data.status;
   const hasError = Boolean(data.error || data.response?.error);
+  const has429Status = [status, data.status_code, data.statusCode]
+    .some(value => value === 429 || value === '429');
   const isFailure = hasError ||
     eventType.endsWith('.failed') ||
     eventType === 'error' ||
     status === 'failed' ||
-    status === 429 ||
-    data.status_code === 429 ||
-    data.statusCode === 429;
+    has429Status;
 
-  if (!isFailure) return false;
+  // Some backend layers surface their own retry exhaustion as a plain JSON/SSE
+  // error envelope, e.g. { "detail": "exceeded retry limit, last status: 429" },
+  // without setting status/error/type fields. Only inspect error-like envelope
+  // fields here so normal assistant output that talks about 429s passes through.
+  const envelopeText = [
+    errorDetailsToText(data.detail),
+    errorDetailsToText(data.message),
+    errorDetailsToText(data.reason),
+    errorDetailsToText(data.status_details),
+    errorDetailsToText(data.statusText),
+    errorDetailsToText(data.code),
+  ].join(' ');
+
+  if (!isFailure) {
+    const isProgressEvent = eventType.startsWith('response.') && !eventType.endsWith('.failed');
+    return !isProgressEvent && EMBEDDED_429_RE.test(envelopeText);
+  }
 
   const text = [
     eventType,
     errorDetailsToText(data.error),
     errorDetailsToText(data.response?.error),
-    errorDetailsToText(data.message),
+    envelopeText,
     errorDetailsToText(data.response?.status_details),
+    errorDetailsToText(data.response?.detail),
+    errorDetailsToText(data.response?.message),
     errorDetailsToText(status),
     errorDetailsToText(data.status_code),
     errorDetailsToText(data.statusCode),
-    errorDetailsToText(data.statusText),
-    errorDetailsToText(data.code),
   ].join(' ');
 
   return EMBEDDED_429_RE.test(text);
