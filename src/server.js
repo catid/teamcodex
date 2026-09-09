@@ -100,13 +100,17 @@ export function createProxyServer(accountManager, config, hooks = {}) {
       // Track request
       const reqId = ++requestCounter;
       const requestStarted = performance.now();
-      const ctx = { account: null, accountRef: null, status: null, attempts: 0, excluded: new Set(), poolName, networkRetries: 0, recovered: false, refreshed: new Set() };
+      const ctx = { account: null, accountRef: null, status: null, attempts: 0, excluded: new Set(), poolName, maxAccountRetries: accountManager.accounts.length * 2, networkRetries: 0, recovered: false, refreshed: new Set() };
       let recorded = false;
       const recordRequest = () => {
         if (recorded) return;
         recorded = true;
         accountManager.stats?.recordRequest({ status: res.statusCode, disconnected: !res.writableFinished,
           durationMs: performance.now() - requestStarted }, ctx.accountRef);
+        hooks.onRequestEnd?.(reqId, {
+          method: req.method, path: req.url,
+          account: ctx.account, status: ctx.status ?? res.statusCode,
+        });
       };
       res.once('finish', recordRequest);
       res.once('close', recordRequest);
@@ -137,13 +141,9 @@ export function createProxyServer(accountManager, config, hooks = {}) {
         } else {
           res.destroy();
         }
-      } finally {
-        hooks.onRequestEnd?.(reqId, {
-          method: req.method, path: req.url,
-          account: ctx.account, status: ctx.status,
-        });
       }
     } catch (err) {
+      if (res.destroyed) return;
       console.error(errorMessage('UNHANDLED_ERROR'), err);
     }
   });
@@ -191,9 +191,12 @@ function buildUpstreamUrl(account, reqUrl, upstreams) {
 }
 
 async function forwardRequest(req, res, body, accountManager, upstreams, retryCount, hooks, reqId, ctx, logDir) {
-  const maxRetries = accountManager.accounts.length * 2;
+  const maxRetries = ctx.maxAccountRetries;
 
   if (res.destroyed || res.writableEnded) return;
+  if (ctx.poolName !== undefined && !Object.hasOwn(accountManager.routing?.pools ?? {}, ctx.poolName)) {
+    return writeRoutingChanged(res, ctx);
+  }
   // A bounded recovery check can return an account to service after a reset.
   let account = accountManager.getActiveAccount(ctx.poolName, ctx.excluded);
   if (!account && !ctx.recovered && hooks.onAccountsUnavailable) {
@@ -214,6 +217,9 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
       res.removeListener('close', onClose);
     }
     if (res.destroyed) return;
+    if (ctx.poolName !== undefined && !Object.hasOwn(accountManager.routing?.pools ?? {}, ctx.poolName)) {
+      return writeRoutingChanged(res, ctx);
+    }
     account = accountManager.getActiveAccount(ctx.poolName, ctx.excluded);
   }
   if (!account) {
@@ -241,8 +247,9 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
 
     // Refresh token if needed
     await accountManager.ensureTokenFresh(account);
-    if ((['error', 'throttled'].includes(account.status) || !accountManager.accounts.includes(account)) && retryCount < maxRetries) {
+    if (!accountManager.isAccountEligible(account, ctx.poolName)) {
       lease.release();
+      if (retryCount >= maxRetries) return writeRoutingChanged(res, ctx);
       return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir);
     }
 
@@ -267,7 +274,8 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
     // let the client's own chatgpt-account-id leak through with our token — if
     // we don't have an account id, drop it so the backend uses the token's own.
     delete headers['x-teamcodex-pool'];
-    headers['authorization'] = `Bearer ${account.credential}`;
+    const credential = account.credential;
+    headers['authorization'] = `Bearer ${credential}`;
     if (account.type === 'chatgpt' && account.accountId) {
       headers['chatgpt-account-id'] = account.accountId;
     } else {
@@ -351,16 +359,18 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
         await upstreamRes.body?.cancel();
         clearTimeout(timeout);
         if (logDir) logSections.push('=== RESPONSE 401 — forcing token refresh ===');
-        if (account.type === 'chatgpt' && account.refreshToken && !ctx.refreshed.has(account)) {
-          ctx.refreshed.add(account);
-          console.log(`[TeamCodex] 401 on "${account.name}" — forcing token refresh`);
-          const prevCredential = account.credential;
-          await accountManager.ensureTokenFresh(account, true);
-          if (account.credential === prevCredential && account.status === 'active') {
+        // A late rejection belongs to the token we sent, not a replacement login.
+        if (account.credential === credential) {
+          if (account.type === 'chatgpt' && account.refreshToken && !ctx.refreshed.has(account)) {
+            ctx.refreshed.add(account);
+            console.log(`[TeamCodex] 401 on "${account.name}" — forcing token refresh`);
+            await accountManager.ensureTokenFresh(account, true);
+            if (account.credential === credential && account.status === 'active') {
+              accountManager.markAuthFailed(account);
+            }
+          } else {
             accountManager.markAuthFailed(account);
           }
-        } else {
-          accountManager.markAuthFailed(account);
         }
         lease.observe(failed, headerLatency);
         lease.release();
@@ -527,6 +537,13 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
     if (failed || (headerLatency !== undefined && !res.destroyed)) lease.observe(failed, headerLatency);
     lease.release();
   }
+}
+
+/** @param {http.ServerResponse} res @param {{status: number | null}} ctx */
+function writeRoutingChanged(res, ctx) {
+  ctx.status = 503;
+  res.writeHead(503, { 'content-type': 'application/json', 'retry-after': '1' });
+  res.end(JSON.stringify(errorResponse('ROUTING_CHANGED')));
 }
 
 /**

@@ -1,3 +1,13 @@
+import { stripVTControlCharacters } from 'node:util';
+
+/** Render external text as one inert terminal line, before adding styles.
+ * @param {unknown} value @returns {string}
+ */
+export function plainText(value) {
+  // eslint-disable-next-line no-control-regex -- Remove terminal controls and bidi overrides from external text.
+  return stripVTControlCharacters(String(value ?? '')).replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, ' ');
+}
+
 // ── ANSI helpers ─────────────────────────────────────────────
 
 const SPINNER = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'.split('');

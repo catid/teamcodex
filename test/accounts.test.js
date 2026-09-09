@@ -6,6 +6,41 @@ import { findConfigAccount, resolveAccounts, syncAccountsFromDisk } from '../src
 
 const key = (name, apiKey = name) => ({ name, type: 'apikey', apiKey, accountId: null });
 
+test('reload publishes routing with account metadata and counts metadata changes', async () => {
+  const config = { accounts: [key('first')] };
+  const manager = new AccountManager(config.accounts);
+  const routing = { defaultPool: 'main', pools: { main: { accounts: ['renamed'], strategy: 'failover' } } };
+  // Match this rename by identity instead of display name.
+  config.accounts[0].accountId = 'id';
+  manager.accounts[0].accountId = 'id';
+  const disk = { accounts: [{ ...config.accounts[0], name: 'renamed', enabled: false, weight: 2 }], routing, switchThreshold: 0.9 };
+  const pending = syncAccountsFromDisk(disk, config, manager);
+  assert.equal(manager.routing, undefined);
+  assert.equal(manager.switchThreshold, 0.98);
+  assert.deepEqual(await pending, { added: 0, updated: 1, removed: 0 });
+  assert.deepEqual(manager.routing, routing);
+  assert.deepEqual(config.routing, routing);
+  assert.equal(config.switchThreshold, 0.9);
+  assert.equal(manager.accounts[0].enabled, false);
+});
+
+for (const rejected of [false, true]) {
+  test(`late refresh ${rejected ? 'failure' : 'success'} preserves replacement access tokens with an unchanged refresh token`, async t => {
+    const { promise, resolve } = Promise.withResolvers();
+    t.mock.method(globalThis, 'fetch', () => promise);
+    const account = { name: 'first', type: 'chatgpt', accessToken: 'old', refreshToken: 'same-refresh', expiresAt: 1 };
+    const config = { accounts: [account] };
+    const manager = new AccountManager(config.accounts);
+    const pending = manager.ensureTokenFresh(0);
+    await syncAccountsFromDisk({ accounts: [{ ...account, accessToken: 'new-login', expiresAt: Date.now() + 3600000 }] }, config, manager);
+    resolve(rejected ? Response.json({ error: 'invalid_grant' }, { status: 400 }) : Response.json({ access_token: 'late', refresh_token: 'late-refresh' }));
+    await pending;
+    assert.equal(manager.accounts[0].credential, 'new-login');
+    assert.equal(manager.accounts[0].refreshToken, 'same-refresh');
+    assert.equal(manager.accounts[0].status, 'active');
+  });
+}
+
 test('starting account and rotation schedule are shuffled without changing config indexes', () => {
   const accounts = ['a', 'b', 'c', 'd'].map(name => key(name));
   const manager = new AccountManager(accounts, 0.98, undefined, { randomIndex: () => 0 });

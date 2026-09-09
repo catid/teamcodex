@@ -1,10 +1,7 @@
-import { stripVTControlCharacters } from 'node:util';
-
 import { createError } from './errors.js';
+import { plainText as clean } from './tui-style.js';
 
 const finite = value => typeof value === 'number' && Number.isFinite(value);
-  // eslint-disable-next-line no-control-regex -- Strip or test terminal control sequences.
-const clean = value => stripVTControlCharacters(String(value ?? '')).replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, ' ');
 const time = value => typeof value === 'number' ? value : Date.parse(value || '');
 const compact = value => finite(value) ? Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(value) : '—';
 const number = value => finite(value) ? Math.round(value).toLocaleString('en-US') : '—';
@@ -66,6 +63,8 @@ function windows(account) {
 }
 
 function health(account, now, threshold) {
+  if (account.enabled === false || account.status === 'disabled') return { label: 'Disabled', color: 'dim' };
+  if (account.status === 'refreshing') return { label: 'Refreshing', color: 'cyan' };
   if (account.status === 'error') return { label: 'Login needed', color: 'red' };
   if (account.status === 'exhausted') return { label: 'Exhausted', color: 'red' };
   if (account.status === 'throttled' && (!time(account.rateLimitedUntil) || time(account.rateLimitedUntil) > now)) {

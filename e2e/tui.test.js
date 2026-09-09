@@ -105,7 +105,8 @@ test('interactive TUI states with mock requests and review screenshots', { timeo
     loginOutput += data;
     const plain = loginOutput.replaceAll(String.fromCharCode(27), '').replace(/\[[0-9;]*m/g, '');
     const joined = plain.split(/\r?\n/).map(line => line.replace(/^│ /, '').replace(/ *│$/, '')).join('');
-    const match = joined.match(/https:\/\/auth\.openai\.com\/oauth\/authorize\?[^\s]+/);
+    // PTY chunks may end mid-URL; wait for the last query field before capturing state.
+    const match = joined.match(/https:\/\/auth\.openai\.com\/oauth\/authorize\?[^\s]*?originator=codex_cli_rs/);
     if (match && !authorize) authorize = new URL(match[0]);
     writes = writes.then(() => page.evaluate(data => new Promise(resolve => window.terminal.write(data, resolve)), data));
     // Keep asynchronous browser errors visible at the next capture.
@@ -117,10 +118,15 @@ test('interactive TUI states with mock requests and review screenshots', { timeo
   });
   /** @param {string} expected */
   const waitFor = async expected => {
-    await page.waitForFunction(expected => {
-      const b = window.terminal.buffer.active;
-      return Array.from({ length: b.length }, (_, i) => b.getLine(i)?.translateToString(true)).join('\n').includes(expected);
-    }, expected, { timeout: 10_000 });
+    try {
+      await page.waitForFunction(expected => {
+        const b = window.terminal.buffer.active;
+        return Array.from({ length: b.length }, (_, i) => b.getLine(i)?.translateToString(true)).join('\n').includes(expected);
+      }, expected, { timeout: 10_000 });
+    } catch (cause) {
+      await writeFile(join(artifacts, 'failure-output.txt'), loginOutput);
+      throw new Error(`Expected terminal text: ${expected}\n${await text()}`, { cause });
+    }
   };
   /** @type {string[]} */
   const captures = [];
@@ -234,7 +240,7 @@ test('interactive TUI states with mock requests and review screenshots', { timeo
   assert.match(await text(), /╭─ Browser login/);
   assert.ok(authorize);
   const callback = await fetch(`http://127.0.0.1:1455/auth/callback?code=tui-browser&state=${authorize.searchParams.get('state')}`);
-  await callback.text();
+  assert.match(await callback.text(), /Login successful/);
   await capture('18-browser-login-return', 'of 34');
   assert.ok(JSON.parse(await readFile(configPath, 'utf8')).accounts.some(account => account.accountId === 'tui-browser'));
   loginKind = 'device';

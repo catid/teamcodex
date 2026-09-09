@@ -1,6 +1,8 @@
 # Validation record
 
-Validated locally on 2026-09-10. Tests use temporary configuration and fake
+This is the historical validation record from the routing/OAuth integration,
+as recorded by its contributor on 2026-09-10. Counts below describe that revision,
+not the current suite. Tests use temporary configuration and fake
 credentials. Provider behavior is backed by revision-specific source references in
 [authentication.md](authentication.md); no real credentials or reset credits were used.
 
@@ -21,7 +23,7 @@ credentials. Provider behavior is backed by revision-specific source references 
 | Upstream references | Reviewed `openai/codex` and user-selected `earendil-works/pi` revisions are recorded in `authentication.md`; upstream checkouts are not included |
 | Roadmap | `ROADMAP.md` distinguishes implemented scope from future product/load/deployment work |
 
-Current unit/integration gate: **124 tests passed**. Coverage was measured with
+That revision's unit/integration gate: **124 tests passed**. Coverage was measured with
 `npm run test:coverage`: reset module **95.22% lines / 83.94% branches**. The aggregate
 report includes test files and excludes separately run Docker/TUI processes; it is
 not a complete application coverage percentage. No claim of exhaustive branch or

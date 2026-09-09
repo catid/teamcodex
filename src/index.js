@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
-import { mkdir, readFile, rename,writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { createInterface } from 'node:readline';
 
@@ -132,21 +133,32 @@ async function serveCommand() {
 
   // Persist refreshed tokens back to config (re-read from disk to avoid clobbering
   // accounts added externally, e.g. by `teamcodex import` while server is running)
-  accountManager.onTokenRefresh(async (idx, newTokens, previousRefreshToken) => {
+  accountManager.onTokenRefresh(async (idx, newTokens, previousRefreshToken, previousCredential) => {
     const account = accountManager.accounts[idx];
     if (!account) return;
-    const memIdx = findConfigAccount(config, account);
-    if (memIdx >= 0) Object.assign(config.accounts[memIdx], newTokens);
+    const isCurrent = () => accountManager.accounts.includes(account) &&
+      account.credential === newTokens.accessToken && account.refreshToken === newTokens.refreshToken;
     let persisted = false;
-    await atomicConfigUpdate(diskConfig => {
+    await atomicConfigUpdate(async diskConfig => {
+      if (!isCurrent()) return;
       const cfgIdx = findConfigAccount(diskConfig, account);
       const diskAccount = diskConfig.accounts[cfgIdx];
-      if (diskAccount && (!diskAccount.refreshToken || diskAccount.refreshToken === previousRefreshToken)) {
-        Object.assign(diskAccount, newTokens);
-        persisted = true;
+      if (!diskAccount || diskAccount.type !== 'chatgpt') return;
+      let stored = diskAccount;
+      if (stored.importFrom && !stored.accessToken) {
+        try {
+          stored = { ...stored, ...await importCredentials(stored.importFrom === '~/.codex/auth.json' ? undefined : stored.importFrom) };
+        } catch { return; }
       }
+      if (!isCurrent() || (stored.accountId || null) !== account.accountId ||
+          stored.accessToken !== previousCredential || stored.refreshToken !== previousRefreshToken) return;
+      Object.assign(diskAccount, newTokens);
+      persisted = true;
     });
-    if (persisted) await updateCodexAuthIfMatching(account, newTokens);
+    if (!persisted || !isCurrent()) return;
+    const memIdx = findConfigAccount(config, account);
+    if (memIdx >= 0) Object.assign(config.accounts[memIdx], newTokens);
+    await updateCodexAuthIfMatching(account, newTokens, previousRefreshToken, previousCredential, isCurrent);
   });
   const port = Number(process.env.TEAMCODEX_LISTEN_PORT || config.proxy.port);
   const useTUI = process.stdout.isTTY && process.stdin.isTTY;
@@ -438,11 +450,18 @@ function codexOverrideArgs(config) {
  * Atomically write codex's auth.json — codex reloads this file at runtime,
  * so it must never observe a partially written one.
  */
-async function writeCodexAuth(authPath, auth) {
+async function writeCodexAuth(authPath, auth, expectedContent, isCurrent) {
   await mkdir(dirname(authPath), { recursive: true });
-  const tmpPath = `${authPath}.${process.pid}.tmp`;
-  await writeFile(tmpPath, `${JSON.stringify(auth, null, 2)  }\n`, { mode: 0o600 });
-  await rename(tmpPath, authPath);
+  const tmpPath = `${authPath}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(tmpPath, `${JSON.stringify(auth, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+    // Codex may have logged in again while the temporary file was being written.
+    if (await readFile(authPath, 'utf8') !== expectedContent || !isCurrent()) return false;
+    await rename(tmpPath, authPath);
+    return true;
+  } finally {
+    await rm(tmpPath, { force: true });
+  }
 }
 
 /**
@@ -452,11 +471,12 @@ async function writeCodexAuth(authPath, auth) {
  * newer tokens — without this, codex eventually tries to refresh a rotated
  * refresh token and dies with "refresh token was revoked".
  */
-async function updateCodexAuthIfMatching(account, newTokens) {
+async function updateCodexAuthIfMatching(account, newTokens, previousRefreshToken, previousCredential, isCurrent) {
   const authPath = defaultCodexAuthPath();
-  let auth;
+  let auth, content;
   try {
-    auth = JSON.parse(await readFile(authPath, 'utf-8'));
+    content = await readFile(authPath, 'utf8');
+    auth = JSON.parse(content);
   } catch {
     return; // no codex auth.json (or unreadable) — nothing to sync
   }
@@ -469,9 +489,10 @@ async function updateCodexAuthIfMatching(account, newTokens) {
   });
   const acctId = account.accountId
     || accountInfoFromTokens({ accessToken: newTokens.accessToken, idToken: newTokens.idToken }).accountId;
-  if (!acctId || authInfo.accountId !== acctId) return;
+  if (!acctId || authInfo.accountId !== acctId || !isCurrent() ||
+      tokens.refresh_token !== previousRefreshToken || tokens.access_token !== previousCredential) return;
 
-  await writeCodexAuth(authPath, {
+  const saved = await writeCodexAuth(authPath, {
     ...auth,
     tokens: {
       ...tokens,
@@ -481,8 +502,8 @@ async function updateCodexAuthIfMatching(account, newTokens) {
       account_id: acctId,
     },
     last_refresh: new Date().toISOString(),
-  });
-  console.log(`[TeamCodex] Synced refreshed tokens to codex auth.json ("${account.name}")`);
+  }, content, isCurrent);
+  if (saved) console.log(`[TeamCodex] Synced refreshed tokens to codex auth.json ("${account.name}")`);
 }
 
 async function runCommand() {
@@ -494,14 +515,14 @@ async function runCommand() {
 
   // --safe: don't add the bypass flag
   let bypass = true;
-  const safeIdx = codexArgs.indexOf('--safe');
-  if (safeIdx >= 0) { bypass = false; codexArgs.splice(safeIdx, 1); }
-
   const settings = [];
   for (let i = 0; i < codexArgs.length && codexArgs[i] !== '--';) {
     if (['-c', '--config'].includes(codexArgs[i])) {
       if (i + 1 >= codexArgs.length) throw createError('ARGUMENT_VALUE_MISSING', { argument: codexArgs[i] });
       settings.push(...codexArgs.splice(i, 2));
+    } else if (codexArgs[i] === '--safe') {
+      bypass = false;
+      codexArgs.splice(i, 1);
     } else if (/^(--config|-c)=/.test(codexArgs[i])) settings.push(...codexArgs.splice(i, 1));
     else i++;
   }
@@ -611,14 +632,20 @@ async function apiCommand() {
   const upstream = account.type === 'chatgpt'
     ? (config.upstream || 'https://chatgpt.com')
     : (config.apiUpstream || 'https://api.openai.com');
-  const url = path.startsWith('http') ? path : `${upstream}${path}`;
+  const base = new URL(upstream);
+  let url;
+  // Preserve configured upstream path prefixes for ordinary endpoint paths.
+  const endpoint = path.startsWith('/') && !path.startsWith('//') ? `.${path}` : path;
+  try { url = new URL(endpoint, `${upstream.replace(/\/$/, '')}/`); }
+  catch { throw createError('API_DESTINATION_INVALID'); }
+  if (url.origin !== base.origin || url.username || url.password) throw createError('API_DESTINATION_INVALID');
 
   const headers = { 'Authorization': `Bearer ${credential}` };
   if (account.type === 'chatgpt' && account.accountId) {
     headers['chatgpt-account-id'] = account.accountId;
   }
 
-  const fetchOpts = { method, headers };
+  const fetchOpts = { method, headers, redirect: 'manual', signal: AbortSignal.timeout(30_000) };
   if (data) {
     headers['Content-Type'] = 'application/json';
     fetchOpts.body = data;

@@ -372,6 +372,27 @@ test('disabled accounts never reserve reset credits', async t => {
   assert.equal(f.posts().length, 0);
 });
 
+test('disabling an account during reservation persistence prevents the reset POST', async t => {
+  const f = await fixture(t);
+  f.monitor.updateConfig = async updater => {
+    const result = await atomicConfigUpdate(updater);
+    f.manager.accounts[0].enabled = false;
+    return result;
+  };
+  await f.monitor.check();
+  assert.equal(f.posts().length, 0);
+  assert.ok((await f.state()).pendingRequestId, 'retain the reserved ID for recovery');
+});
+
+test('disabling an account during reset backoff prevents another wire attempt', async t => {
+  const f = await fixture(t);
+  f.post(() => new Response('', { status: 503 }));
+  f.monitor.wait = async () => { f.manager.accounts[0].enabled = false; };
+  await f.monitor.check();
+  assert.equal(f.posts().length, 1);
+  assert.ok((await f.state()).pendingRequestId);
+});
+
 test('aggregate or credential-stale observations cannot reserve credits', async t => {
   const f = await fixture(t);
   assert.equal(await f.monitor.reserve(f.manager.accounts[0], normalizeUsage(usage())), null);

@@ -6,6 +6,12 @@ terminals show telemetry beside accounts; narrow terminals stack it when there
 is room. Tiny terminals show a centered size hint. Account selection scrolls
 without hiding the footer. `u` opens detailed account and pool usage.
 
+`s` switches the active account in unpooled routing. With explicit pools, selection
+follows each pool's strategy, so the switch shortcut is hidden and explains this
+restriction if pressed. Edit pool membership or strategy and reload with `R`.
+External account, activity, and usage text is stripped of terminal controls before
+styling and display.
+
 ## Responsibilities
 
 - `tui.js`: terminal lifecycle, input, actions, and server event handlers.

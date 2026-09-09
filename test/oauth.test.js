@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import test from 'node:test';
 
 import { AccountManager } from '../src/account-manager.js';
@@ -77,6 +78,14 @@ test('browser OAuth binds the S256 challenge, callback state and token verifier'
     const url = new URL(value);
     challenge = url.searchParams.get('code_challenge');
     assert.equal(url.searchParams.get('code_challenge_method'), 'S256');
+    const malformedStatus = await new Promise((resolve, reject) => {
+      const req = http.get({ hostname: '127.0.0.1', port: 1455, path: '//[' }, res => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode));
+      });
+      req.on('error', reject);
+    });
+    assert.equal(malformedStatus, 400);
     const response = await fetch(`http://127.0.0.1:1455/auth/callback?code=browser-code&state=${url.searchParams.get('state')}`);
     assert.equal(response.status, 200);
     await response.text();

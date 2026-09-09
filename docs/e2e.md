@@ -33,6 +33,12 @@ file ownership, atomic rename on writable mounts, effective capabilities, and
 tmpfs, wrong API keys, healthcheck failure/recovery after malformed config, and
 graceful shutdown followed by restart without losing configuration.
 
+The wrong-UID check requires native Linux permission enforcement. In the reviewed
+macOS Docker Desktop setup, UID 65534 could read the host user's mode-0600
+bind-mounted config, so that strict check fails there. Host file modes alone do
+not establish isolation between container UIDs on that file-sharing backend.
+Keep the check enabled and use the Linux CI run to validate the permission boundary.
+
 This is mock integration coverage, not proof of current vendor API compatibility.
 It does not automate real browser/device consent, host Codex, or OS boot installation.
 The local test suite remains separate: `npm test` does not require Docker.
@@ -43,6 +49,11 @@ Run `npm ci`, `npx playwright install chromium`, then `npm run test:tui`.
 Alternatively set `CHROMIUM_PATH` to an installed Chromium executable. `node-pty`
 requires its native install script (explicitly allowed in package.json); building
 from source requires Python and a C++ toolchain.
+
+On macOS, if `node-pty` reports `posix_spawnp failed`, check that its packaged
+`node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper` is executable
+(use `darwin-x64` on Intel). If that file lacks execute permission, restore it with
+`chmod u+x` and rerun the TUI test.
 
 The native TeamCodex CLI runs inside a real 120×32 PTY. Its ANSI output is rendered
 by xterm.js in Chromium. Keyboard actions exercise selection, add/remove menus,

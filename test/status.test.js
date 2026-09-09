@@ -38,6 +38,18 @@ test('dashboard reports aggregate totals without adding cached input twice', () 
   assert.doesNotMatch(output, /\x1b/);
 });
 
+for (const [status, label] of [['disabled', 'Disabled'], ['refreshing', 'Refreshing']]) {
+  test(`status distinguishes ${status} accounts from ready accounts`, () => {
+    const data = fixture();
+    data.accounts[0].status = status;
+    for (const compact of [false, true]) {
+      const output = renderStatus(data, { now, compact });
+      assert.match(output, /0 ready/);
+      assert.ok(output.includes(label));
+    }
+  });
+}
+
 test('expired cooldowns, pending resets and missing credentials are distinguishable', () => {
   const data = fixture();
   data.accounts[0].status = 'throttled';

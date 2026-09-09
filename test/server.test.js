@@ -9,6 +9,20 @@ import { UsageStats } from '../src/stats.js';
 
 const key = name => ({ name, type: 'apikey', apiKey: name });
 
+test('removing the selected pool during recovery returns a retryable routing error', async t => {
+  let manager;
+  const result = await setup(t, (_req, res) => { assert.fail('No upstream request expected'); res.end(); }, [key('first')], {}, {
+    onAccountsUnavailable: async () => { manager.routing = undefined; },
+  });
+  manager = result.manager;
+  manager.routing = { defaultPool: 'main', pools: { main: { strategy: 'failover', accounts: ['first'] } } };
+  manager.accounts[0].enabled = false;
+  const response = await fetch(`${result.url}/responses`);
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get('retry-after'), '1');
+  assert.equal((await response.json()).error.code, 'ROUTING_CHANGED');
+});
+
 async function listen(t, server) {
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -319,6 +333,45 @@ test('credentials rejected again after a refresh rotate instead of refreshing in
   assert.deepEqual(seen, ['Bearer old', 'Bearer still-rejected', 'Bearer good']);
 });
 
+test('a delayed 401 cannot invalidate credentials replaced during the upstream request', async t => {
+  const seen = [];
+  let manager;
+  const service = await setup(t, (req, res) => {
+    seen.push(req.headers.authorization);
+    if (seen.length === 1) {
+      manager.accounts[0].credential = 'replacement';
+      res.writeHead(401);
+    }
+    res.end('{}');
+  }, [key('first')]);
+  manager = service.manager;
+  const response = await fetch(`${service.url}/responses`);
+  await response.text();
+  assert.equal(response.status, 200);
+  assert.deepEqual(seen, ['Bearer first', 'Bearer replacement']);
+  assert.equal(manager.accounts[0].status, 'active');
+});
+
+test('cancelling an upload ends its activity entry without forwarding', async t => {
+  const { promise: started, resolve: begin } = Promise.withResolvers();
+  const ended = [];
+  let forwarded = 0;
+  const { url } = await setup(t, (_req, res) => { forwarded++; res.end('{}'); }, [key('first')], {}, {
+    onRequestStart: begin,
+    onRequestEnd: (id, info) => ended.push({ id, info }),
+  });
+  const request = http.request(`${url}/responses`, { method: 'POST' });
+  request.on('error', () => {});
+  t.after(() => request.destroy());
+  request.write('partial body');
+  const id = await started;
+  request.destroy();
+  for (let i = 0; i < 100 && !ended.length; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(forwarded, 0);
+  assert.equal(ended.length, 1);
+  assert.equal(ended[0].id, id);
+});
+
 test('admission limits reject excess traffic and release slots after completion', async t => {
   let release;
   const { url } = await setup(t, (_req, res) => {
@@ -337,6 +390,51 @@ test('admission limits reject excess traffic and release slots after completion'
   while (!release) await new Promise(resolve => setTimeout(resolve, 5));
   release();
   assert.equal((await next).status, 200);
+});
+
+for (const change of ['disable', 'remove-from-pool', 'empty-pool', 'remove-pool']) {
+  test(`routing rechecks ${change} after waiting for a token refresh`, async t => {
+    const seen = [];
+    const { manager, url } = await setup(t, (req, res) => {
+      seen.push(req.headers.authorization);
+      res.end('{}');
+    });
+    manager.routing = { defaultPool: 'main', pools: { main: { accounts: ['first', 'second'], strategy: 'failover' } } };
+    const { promise: started, resolve: begin } = Promise.withResolvers();
+    const { promise: refreshing, resolve: release } = Promise.withResolvers();
+    t.after(release);
+    manager.ensureTokenFresh = async account => {
+      if (account.name === 'first') { begin(); await refreshing; }
+    };
+    const pending = fetch(`${url}/responses`, { signal: AbortSignal.timeout(3000) });
+    await started;
+    if (change === 'disable') manager.accounts[0].enabled = false;
+    else if (change === 'remove-pool') delete manager.routing.pools.main;
+    else manager.routing.pools.main.accounts = change === 'empty-pool' ? [] : ['second'];
+    release();
+    const response = await pending;
+    await response.text();
+    assert.equal(response.status, change === 'empty-pool' ? 429 : change === 'remove-pool' ? 503 : 200);
+    assert.deepEqual(seen, change.endsWith('pool') && change !== 'remove-from-pool' ? [] : ['Bearer second']);
+    assert.ok(manager.getStatus().accounts.every(account => account.adaptive.inFlight === 0));
+  });
+}
+
+test('repeated routing changes exhaust the preparation budget without sending a disabled credential', async t => {
+  const seen = [];
+  const { manager, url } = await setup(t, (req, res) => { seen.push(req.headers.authorization); res.end('{}'); });
+  manager.routing = { defaultPool: 'main', pools: { main: { accounts: ['first', 'second'], strategy: 'failover' } } };
+  let preparations = 0;
+  manager.ensureTokenFresh = async account => {
+    preparations++;
+    for (const member of manager.accounts) member.enabled = member !== account;
+  };
+  const response = await fetch(`${url}/responses`, { signal: AbortSignal.timeout(3000) });
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, 'ROUTING_CHANGED');
+  assert.ok(preparations <= 5);
+  assert.deepEqual(seen, []);
+  assert.ok(manager.getStatus().accounts.every(account => account.adaptive.inFlight === 0));
 });
 
 test('pool selection isolates accounts and strips the routing header upstream', async t => {
