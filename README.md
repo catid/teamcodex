@@ -189,6 +189,8 @@ When every account is unavailable, the proxy allows up to five seconds for a coa
 | `teamcodex remove NAME` | Remove an account and reload the server |
 | `teamcodex reset` | Stop the server, back up config, reset settings and proxy key, retain accounts |
 | `teamcodex run [--safe] [ARGS...]` | Run host Codex through the proxy |
+| `teamcodex resume [ARGS...]` | Resume a saved Codex session through the proxy; shorthand for `teamcodex run resume` |
+| `teamcodex fork [ARGS...]` | Branch a saved Codex conversation into a new session through the proxy; shorthand for `teamcodex run fork` |
 | `teamcodex env` | Print a shell command for host Codex, including the proxy key |
 | `teamcodex api PATH` | Call an upstream endpoint directly with a configured account |
 | `teamcodex help` | Show command help |
@@ -198,9 +200,13 @@ Arguments pass through to Codex without shell evaluation:
 ```bash
 teamcodex run resume
 teamcodex run resume --last
+teamcodex resume
+teamcodex fork
 teamcodex run "fix the tests"
 teamcodex run --safe exec "explain this repository"
 ```
+
+Codex allows one active writer per session. If `resume` reports **already has an active writer**, that session is still open in another Codex process, including a detached tmux session. Return to its existing tmux pane, or exit that Codex process with `/quit` before resuming it elsewhere. To continue a separate branch while the original stays open, use `teamcodex fork SESSION_ID` (or `teamcodex fork` for the picker). Forking creates a new conversation with the saved history; see the [official OpenAI command reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli#codex-fork). Do not delete a live writer's lock file.
 
 The `env` output is a complete, shell-quoted command to copy and run. It contains a credential; avoid sharing it. The old `codex $(teamcodex env ...)` invocation is no longer valid. Prefer `teamcodex run`.
 
@@ -349,6 +355,8 @@ Tests cover concurrent config writes, reset backups and permissions, account rel
 ## Troubleshooting
 
 - **Docker cannot connect:** start Docker Desktop on Mac; on Ubuntu check `systemctl status docker` and your user's Docker access. Verify `docker info` succeeds as the same user running TeamCodex.
+- **Docker works over fresh SSH but fails in tmux:** an old tmux server can retain the groups from before Docker was installed. On Linux the launcher automatically uses `sg docker` to activate your existing Docker group membership for that invocation, preserving the working directory and arguments. This requires your user to already belong to the Docker group; it does not change group membership or use sudo. If `sg` is unavailable, use a fresh login outside the old tmux server or run `newgrp docker` in the affected shell.
+- **Resume reports an active writer:** return to the original Codex pane (`tmux list-panes -a` can locate it), quit it before resuming elsewhere, or use `teamcodex fork` for a separate conversation with the same history.
 - **No accounts configured:** run `teamcodex login --device-auth` or `teamcodex import`, then `teamcodex serve`.
 - **Port already allocated:** stop the old proxy using that port or set `TEAMCODEX_PORT` consistently for both server and launcher.
 - **Config permission denied:** check ownership of `TEAMCODEX_CONFIG_DIR`. Run the installer and launcher as your regular user. Avoid mixing root and regular-user installations.

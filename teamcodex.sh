@@ -20,10 +20,28 @@ if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>
   echo 'Docker with the Compose plugin is required. See README.md for macOS and Ubuntu setup.' >&2
   exit 1
 fi
-if ! docker info >/dev/null 2>&1; then
-  echo 'Docker is not running or your user cannot access it. Start Docker and retry.' >&2
+if ! docker_error="$(docker info 2>&1 >/dev/null)"; then
+  # Existing tmux servers keep the groups from when they started. Activate an
+  # already granted Docker membership for this invocation without sudo or logout.
+  if [[ "$(uname -s)" == Linux && "${TEAMCODEX_DOCKER_GROUP_RETRY:-0}" != 1 ]] &&
+      command -v sg >/dev/null 2>&1 &&
+      [[ " $(id -nG "$(id -un)") " == *' docker '* && " $(id -nG) " != *' docker '* ]]; then
+    echo 'Activating your existing Docker group membership for this command (older shell/tmux session).' >&2
+    export TEAMCODEX_DOCKER_GROUP_RETRY=1
+    group_command=exec
+    # sg executes through /bin/sh: use POSIX single quoting, including literal
+    # quotes/newlines in prompts. Bash printf %q is not portable to that shell.
+    for arg in "$ROOT/teamcodex.sh" "$@"; do
+      quoted_arg=${arg//\'/\'\\\'\'}
+      group_command+=" '$quoted_arg'"
+    done
+    exec sg docker -c "$group_command"
+  fi
+  echo 'Cannot access Docker. On macOS, start Docker Desktop or Colima; on Linux, check the Docker service and socket permissions.' >&2
+  if [[ -n "$docker_error" ]]; then printf '%s\n' "$docker_error" >&2; fi
   exit 1
 fi
+unset TEAMCODEX_DOCKER_GROUP_RETRY
 umask 077
 mkdir -p "$TEAMCODEX_CONFIG_DIR" "$TEAMCODEX_CODEX_HOME"
 TEAMCODEX_CONFIG_DIR="$(cd -- "$TEAMCODEX_CONFIG_DIR" && pwd)"
@@ -52,7 +70,8 @@ case "$command_name" in
     "${COMPOSE[@]}" stop teamcodex
     cli reset "$@"
     ;;
-  run)
+  run|resume|fork)
+    if [[ "$command_name" != run ]]; then set -- "$command_name" "$@"; fi
     if ! command -v codex >/dev/null 2>&1; then
       echo 'Install Codex CLI on the host before using teamcodex run.' >&2
       exit 1
@@ -108,6 +127,7 @@ case "$command_name" in
   help|--help|-h)
     echo 'Docker: teamcodex build | serve | stop | restart | logs | ps'
     echo 'Host Codex: teamcodex run [--safe] [Codex arguments]'
+    echo 'Sessions: teamcodex resume [Codex arguments] | fork [Codex arguments]'
     echo 'Reset: teamcodex reset (stops server; keeps accounts and creates a backup)'
     cli help
     ;;
