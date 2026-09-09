@@ -1,10 +1,11 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { mkdtemp, mkdir, writeFile, readFile, realpath, rm } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { mkdir, mkdtemp, readFile, realpath, rm,writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import test from 'node:test';
+import { promisify } from 'node:util';
+
 import { createDefaultConfig } from '../src/config.js';
 
 const exec = promisify(execFile);
@@ -85,7 +86,7 @@ if (args.includes('env') && args.includes('--null')) {
   assert.ok(ordered.indexOf('model_provider=teamcodex') < ordered.indexOf('--'));
   assert.equal(ordered.at(-1), '-literal prompt');
   // Commands run from an SSH-fed script must leave subsequent stdin intact.
-  const shellScript = JSON.stringify(link) + ' status\nprintf "after-status\\n"\n';
+  const shellScript = `${JSON.stringify(link)  } status\nprintf "after-status\\n"\n`;
   const { spawn } = await import('node:child_process');
   const child = spawn('/bin/bash', [], { env, cwd: f.dir });
   let output = '';

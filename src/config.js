@@ -1,7 +1,10 @@
-import { readFile, writeFile, mkdir, rename, rm, copyFile, chmod } from 'node:fs/promises';
-import { join, dirname, resolve } from 'node:path';
-import { homedir } from 'node:os';
 import { randomBytes } from 'node:crypto';
+import { chmod,copyFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+
+import { createError } from './errors.js';
+import { validateRouting } from './routing.js';
 
 export function getConfigPath() {
   if (process.env.TEAMCODEX_CONFIG) return resolve(expandHome(process.env.TEAMCODEX_CONFIG));
@@ -18,7 +21,7 @@ export function createDefaultConfig() {
     proxy: {
       host: '127.0.0.1',
       port: 1456,
-      apiKey: 'tcx-' + randomBytes(24).toString('base64url'),
+      apiKey: `tcx-${  randomBytes(24).toString('base64url')}`,
     },
     upstream: 'https://chatgpt.com',
     apiUpstream: 'https://api.openai.com',
@@ -59,26 +62,27 @@ export async function saveConfig(config) {
 
 function validateConfig(config) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) {
-    throw new Error('Config must be a JSON object');
+    throw createError('CONFIG_INVALID');
   }
   const port = config.proxy?.port;
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error('proxy.port must be an integer from 1 to 65535');
+    throw createError('CONFIG_PORT_INVALID');
   }
   if (typeof config.proxy.apiKey !== 'string' || !config.proxy.apiKey.trim()) {
-    throw new Error('proxy.apiKey must be a nonempty string');
+    throw createError('CONFIG_KEY_INVALID');
   }
   if (config.proxy.host !== undefined &&
       (typeof config.proxy.host !== 'string' || !config.proxy.host.trim())) {
-    throw new Error('proxy.host must be a nonempty string');
+    throw createError('CONFIG_HOST_INVALID');
   }
   if (!Array.isArray(config.accounts) || config.accounts.some(a =>
     !a || typeof a.name !== 'string' || !a.name.trim() || !['chatgpt', 'apikey'].includes(a.type))) {
-    throw new Error('accounts must be an array of named chatgpt or apikey accounts');
+    throw createError('CONFIG_ACCOUNTS_INVALID');
   }
+  validateRouting(config);
   if (config.switchThreshold !== undefined &&
       (!Number.isFinite(config.switchThreshold) || config.switchThreshold < 0 || config.switchThreshold > 1)) {
-    throw new Error('switchThreshold must be a number from 0 to 1');
+    throw createError('CONFIG_THRESHOLD_INVALID');
   }
   if (config.retry !== undefined) {
     const r = config.retry;
@@ -86,7 +90,7 @@ function validateConfig(config) {
         (r.maxRetries !== undefined && (!Number.isInteger(r.maxRetries) || r.maxRetries < 0 || r.maxRetries > 5)) ||
         ['headerTimeoutSeconds', 'idleTimeoutSeconds'].some(key => r[key] !== undefined &&
           (!Number.isFinite(r[key]) || r[key] < 1 || r[key] > 600))) {
-      throw new Error('retry requires maxRetries (0–5) and headerTimeoutSeconds/idleTimeoutSeconds (1–600)');
+      throw createError('CONFIG_RETRY_INVALID');
     }
   }
   if (config.autoReset !== undefined) {
@@ -95,7 +99,7 @@ function validateConfig(config) {
         (policy.enabled !== undefined && typeof policy.enabled !== 'boolean') ||
         (policy.threshold !== undefined && (!Number.isFinite(policy.threshold) || policy.threshold < 0.01 || policy.threshold > 1)) ||
         (policy.pollIntervalSeconds !== undefined && (!Number.isInteger(policy.pollIntervalSeconds) || policy.pollIntervalSeconds < 30 || policy.pollIntervalSeconds > 3600))) {
-      throw new Error('autoReset requires enabled (boolean), threshold (0.01–1), and pollIntervalSeconds (30–3600)');
+      throw createError('CONFIG_RESET_POLICY_INVALID');
     }
   }
   if (config.usageResetState !== undefined) {
@@ -104,14 +108,14 @@ function validateConfig(config) {
       !state || typeof state !== 'object' || Array.isArray(state) ||
       (['lastAttemptAt', 'lastStartedAt'].some(key => state[key] !== undefined && (typeof state[key] !== 'string' || !Number.isFinite(Date.parse(state[key]))))) ||
       (state.pendingRequestId !== undefined && (typeof state.pendingRequestId !== 'string' || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(state.pendingRequestId))))) {
-      throw new Error('usageResetState contains invalid reset tracking data; preserve pending redemption IDs when repairing it');
+      throw createError('CONFIG_RESET_STATE_INVALID');
     }
   }
   for (const key of ['upstream', 'apiUpstream']) {
     if (config[key] === undefined) continue;
     const url = new URL(config[key]);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
-      throw new Error(`${key} must be an HTTP(S) URL without credentials`);
+      throw createError('CONFIG_UPSTREAM_INVALID', { key });
     }
   }
 }
@@ -122,7 +126,7 @@ async function writeConfig(config) {
   await mkdir(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
   try {
-    await writeFile(tmp, JSON.stringify(config, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+    await writeFile(tmp, `${JSON.stringify(config, null, 2)  }\n`, { mode: 0o600, flag: 'wx' });
     await rename(tmp, path);
   } finally {
     await rm(tmp, { force: true });
@@ -142,7 +146,7 @@ async function withConfigLock(action) {
     } catch (err) {
       if (err.code !== 'EEXIST') throw err;
       if (Date.now() >= deadline) {
-        throw new Error(`Config is locked at ${lock}. If no TeamCodex command is writing it, remove that lock directory and retry.`);
+        throw createError('CONFIG_LOCKED', { lock }, { cause: err });
       }
       await new Promise(resolve => setTimeout(resolve, 25));
     }

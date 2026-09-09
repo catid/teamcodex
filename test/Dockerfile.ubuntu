@@ -6,5 +6,6 @@ COPY package.json ./
 COPY src/ ./src/
 COPY test/ ./test/
 COPY teamcodex.sh ./
+COPY scripts/errors.sh ./scripts/errors.sh
 USER ubuntu
 CMD ["node", "--test"]

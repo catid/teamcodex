@@ -16,12 +16,29 @@
     {
       "name": "primary",
       "type": "chatgpt",
-      "importFrom": "~/.codex/auth.json"
+      "importFrom": "~/.codex/auth.json",
+      "weight": 1,
+      "enabled": true,
+      "switchThreshold": 0.98
     }
   ],
   "retry": {
     "maxRetries": 2,
     "headerTimeoutSeconds": 60,
     "idleTimeoutSeconds": 120
+  },
+  "maxConcurrentRequests": 100,
+  "routing": {
+    "defaultPool": "main",
+    "pools": {
+      "main": {
+        "accounts": [
+          "primary"
+        ],
+        "strategy": "weighted-round-robin",
+        "switchThreshold": 0.98,
+        "maxConcurrentRequests": 50
+      }
+    }
   }
 }

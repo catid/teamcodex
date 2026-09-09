@@ -1,12 +1,13 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, stat, rm, chmod } from 'node:fs/promises';
-import { tmpdir, homedir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { execFile } from 'node:child_process';
+import { chmod,mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { homedir,tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import test from 'node:test';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { createDefaultConfig, loadConfig, saveConfig, atomicConfigUpdate, resetConfig, getConfigPath } from '../src/config.js';
+
+import { atomicConfigUpdate, createDefaultConfig, getConfigPath,loadConfig, resetConfig, saveConfig } from '../src/config.js';
 
 const exec = promisify(execFile);
 

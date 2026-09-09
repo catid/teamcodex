@@ -12,7 +12,17 @@
   ],
   "scripts": {
     "start": "node src/index.js",
-    "test": "node --test"
+    "test": "node --test test/*.test.js",
+    "lint": "eslint . --max-warnings 0",
+    "knip": "knip",
+    "check": "npm run errors:check && npm run lint && npm run knip && npm test",
+    "errors:generate": "node scripts/generate-errors.js",
+    "errors:check": "node scripts/generate-errors.js --check",
+    "test:e2e": "node --test e2e/docker.test.js",
+    "lint:fix": "eslint . --fix --max-warnings 0",
+    "test:tui": "node --test e2e/tui.test.js",
+    "test:oauth": "node --test e2e/oauth.test.js",
+    "test:coverage": "node --test --experimental-test-coverage test/*.test.js"
   },
   "keywords": [
     "codex",
@@ -24,6 +34,19 @@
   ],
   "license": "MIT",
   "engines": {
-    "node": ">=22.0.0"
+    "node": "^22.13.0 || >=24.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@xterm/xterm": "6.0.0",
+    "eslint": "10.10.0",
+    "eslint-plugin-simple-import-sort": "14.0.0",
+    "globals": "17.12.0",
+    "knip": "6.35.1",
+    "node-pty": "1.1.0",
+    "playwright": "1.63.0"
+  },
+  "allowScripts": {
+    "node-pty@1.1.0": true
   }
 }

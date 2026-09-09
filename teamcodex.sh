@@ -9,6 +9,7 @@ while [[ -L "$SOURCE" ]]; do
   [[ "$SOURCE" = /* ]] || SOURCE="$SOURCE_DIR/$SOURCE"
 done
 ROOT="$(cd -P -- "$(dirname -- "$SOURCE")" && pwd)"
+source "$ROOT/scripts/errors.sh"
 export TEAMCODEX_CONFIG_DIR="${TEAMCODEX_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/teamcodex}"
 export TEAMCODEX_CODEX_HOME="${TEAMCODEX_CODEX_HOME:-${CODEX_HOME:-$HOME/.codex}}"
 TEAMCODEX_UID="$(id -u)"
@@ -17,11 +18,11 @@ export TEAMCODEX_UID TEAMCODEX_GID
 export TEAMCODEX_PORT="${TEAMCODEX_PORT:-1456}"
 
 if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
-  echo 'Docker with the Compose plugin is required. See README.md for macOS and Ubuntu setup.' >&2
+  teamcodex_error DOCKER_REQUIRED
   exit 1
 fi
 if ! docker info >/dev/null 2>&1; then
-  echo 'Docker is not running or your user cannot access it. Start Docker and retry.' >&2
+  teamcodex_error DOCKER_UNAVAILABLE
   exit 1
 fi
 umask 077
@@ -54,7 +55,7 @@ case "$command_name" in
     ;;
   run)
     if ! command -v codex >/dev/null 2>&1; then
-      echo 'Install Codex CLI on the host before using teamcodex run.' >&2
+      teamcodex_error HOST_CODEX_REQUIRED
       exit 1
     fi
     "${COMPOSE[@]}" up -d --wait >&2
@@ -64,7 +65,7 @@ case "$command_name" in
     launch_args=()
     while IFS= read -r -d '' value; do launch_args+=("$value"); done < "$launch_file"
     rm -f "$launch_file"
-    if [[ ${#launch_args[@]} -lt 3 ]]; then echo 'Failed to read Codex launch settings.' >&2; exit 1; fi
+    if [[ ${#launch_args[@]} -lt 3 ]]; then teamcodex_error LAUNCH_SETTINGS_INVALID; exit 1; fi
     export TEAMCODEX_API_KEY="${launch_args[0]}"
     codex_args=()
     bypass=1
@@ -75,7 +76,7 @@ case "$command_name" in
       case "$arg" in
         --safe) bypass=0 ;;
         -c|--config)
-          if [[ $# -eq 0 ]]; then echo "$arg requires a value" >&2; exit 1; fi
+          if [[ $# -eq 0 ]]; then teamcodex_error ARGUMENT_VALUE_MISSING "$arg"; exit 1; fi
           config_args+=("$arg" "$1"); shift ;;
         --config=*|-c=*) config_args+=("$arg") ;;
         --) codex_args+=(-- "$@"); break ;;
@@ -99,7 +100,7 @@ case "$command_name" in
   login)
     for arg in "$@"; do
       if [[ "$arg" == '--browser' ]]; then
-        echo 'Docker login uses device authorization. Run teamcodex login --device-auth.' >&2
+        teamcodex_error DOCKER_BROWSER_LOGIN_UNSUPPORTED
         exit 1
       fi
     done

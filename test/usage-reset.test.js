@@ -1,11 +1,12 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdtemp, readFile,rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+
 import { AccountManager } from '../src/account-manager.js';
-import { UsageResetMonitor, normalizeUsage } from '../src/usage-reset.js';
-import { atomicConfigUpdate, createDefaultConfig, saveConfig, loadConfig, resetConfig } from '../src/config.js';
+import { atomicConfigUpdate, createDefaultConfig, loadConfig, resetConfig,saveConfig } from '../src/config.js';
+import { normalizeUsage,UsageResetMonitor } from '../src/usage-reset.js';
 
 const json = payload => globalThis.Response.json(payload);
 const usage = (percent = 100, credits = 2) => ({
@@ -186,7 +187,9 @@ test('state persistence failure prevents the upstream POST', async t => {
 test('stale or future-dated observations cannot initiate new redemptions', async t => {
   const f = await fixture(t);
   for (const timestamp of [f.now() - 600_001, f.now() + 1000]) {
-    assert.equal(await f.monitor.reserve(f.manager.accounts[0], normalizeUsage(usage(), timestamp)), null);
+    const snapshot = await f.monitor.readUsage(f.manager.accounts[0]);
+    snapshot.fetchedAt = timestamp;
+    assert.equal(await f.monitor.reserve(f.manager.accounts[0], snapshot), null);
   }
 });
 
@@ -262,4 +265,113 @@ test('fresh reduced usage recovers a throttled account even when reset outcome w
   await f.monitor.check();
   assert.equal(f.manager.accounts[0].status, 'active');
   assert.equal(f.posts().length, 0);
+});
+
+for (const strategy of ['weighted-round-robin', 'failover']) {
+  test(`${strategy}: pool usage, weights and routing thresholds never trigger another account's reset`, async t => {
+    const routing = { defaultPool: 'shared', pools: {
+      shared: { accounts: ['account-1', 'account-2'], strategy, switchThreshold: 0.01 },
+      overlapping: { accounts: ['account-1'], strategy, switchThreshold: 1 },
+    } };
+    const f = await fixture(t, { routing, accounts: [
+      { ...account(), weight: 1, switchThreshold: 1 },
+      { ...account('account-2'), weight: 1000, switchThreshold: 0.01 },
+    ] });
+    f.manager.routing = routing;
+    f.manager.accounts[1].usage.totalInputTokens = 1_000_000_000;
+    f.manager.accounts[1].quota.primary = 1;
+    const redeemed = new Set();
+    f.get((_url, init) => {
+      const id = init.headers['chatgpt-account-id'];
+      return json(usage(id === 'account-1' && !redeemed.has(id) ? 99 : 20, 2));
+    });
+    f.post((_url, init) => { redeemed.add(init.headers['chatgpt-account-id']); return json({ code: 'reset' }); });
+    await f.monitor.recover();
+    assert.equal(f.posts().length, 1);
+    assert.equal(f.posts()[0].headers['chatgpt-account-id'], 'account-1');
+    assert.equal(f.posts()[0].headers.authorization, 'Bearer secret-account-1');
+    const disk = await loadConfig();
+    assert.deepEqual(Object.keys(disk.usageResetState), ['chatgpt:account-1']);
+    assert.equal(f.manager.accounts[1].usageReset.availableCredits, 2);
+    await f.monitor.check();
+    assert.equal(f.posts().length, 1, 'overlapping pools must not multiply redemptions');
+  });
+}
+
+test('a usage snapshot cannot authorize a reset for another account', async t => {
+  const f = await fixture(t, { accounts: [account(), account('account-2')] });
+  const snapshot = await f.monitor.readUsage(f.manager.accounts[0]);
+  assert.equal(await f.monitor.reserve(f.manager.accounts[1], snapshot), null);
+  assert.equal((await loadConfig()).usageResetState, undefined);
+});
+
+test('disabled accounts never reserve reset credits', async t => {
+  const f = await fixture(t, { accounts: [{ ...account(), enabled: false }] });
+  await f.monitor.check();
+  assert.equal(f.posts().length, 0);
+});
+
+test('aggregate or credential-stale observations cannot reserve credits', async t => {
+  const f = await fixture(t);
+  assert.equal(await f.monitor.reserve(f.manager.accounts[0], normalizeUsage(usage())), null);
+  const snapshot = await f.monitor.readUsage(f.manager.accounts[0]);
+  f.manager.accounts[0].credential = 'replacement-token';
+  assert.equal(await f.monitor.reserve(f.manager.accounts[0], snapshot), null);
+  assert.equal((await loadConfig()).usageResetState, undefined);
+});
+
+test('a credential replaced on disk cannot authorize a reset from stale in-memory usage', async t => {
+  const f = await fixture(t);
+  const live = f.manager.accounts[0];
+  const snapshot = await f.monitor.readUsage(live);
+  await atomicConfigUpdate(config => { config.accounts[0].accessToken = 'new-disk-token'; });
+  assert.equal(await f.monitor.reserve(live, snapshot), null);
+  assert.equal(await f.state(), undefined);
+});
+
+test('a removed account cannot reserve a reset while waiting for the config transaction', async t => {
+  const f = await fixture(t);
+  const live = f.manager.accounts[0];
+  const snapshot = await f.monitor.readUsage(live);
+  f.manager.accounts.splice(0, 1);
+  assert.equal(await f.monitor.reserve(live, snapshot), null);
+  assert.equal(await f.state(), undefined);
+});
+
+for (const changed of [false, true]) {
+  test(`imported credential reset reservation checks current auth file (changed=${changed})`, async t => {
+    const f = await fixture(t);
+    const live = f.manager.accounts[0];
+    const snapshot = await f.monitor.readUsage(live);
+    const authPath = join(f.path, '..', 'auth.json');
+    await writeFile(authPath, JSON.stringify({ tokens: {
+      access_token: changed ? 'replaced-import' : live.credential,
+      account_id: live.accountId,
+    } }), { mode: 0o600 });
+    await atomicConfigUpdate(config => {
+      delete config.accounts[0].accessToken;
+      config.accounts[0].importFrom = authPath;
+    });
+    const reservation = await f.monitor.reserve(live, snapshot);
+    assert.equal(Boolean(reservation), !changed);
+    assert.equal(Boolean(await f.state()), !changed);
+  });
+}
+
+test('provider denied usage cannot reactivate a throttled account after a reset', async t => {
+  const f = await fixture(t);
+  const live = f.manager.accounts[0];
+  live.status = 'throttled';
+  live.rateLimitedUntil = f.now() + 60_000;
+  let reads = 0;
+  f.get(() => {
+    const payload = usage(reads++ === 0 ? 100 : 0);
+    payload.rate_limit.allowed = false;
+    payload.rate_limit.limit_reached = true;
+    return json(payload);
+  });
+  await f.monitor.check();
+  assert.equal(f.posts().length, 1);
+  assert.equal(live.status, 'throttled');
+  assert.equal(live.rateLimitedUntil, f.now() + 60_000);
 });

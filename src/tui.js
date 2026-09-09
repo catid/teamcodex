@@ -1,111 +1,9 @@
-import { importCredentials, accountInfoFromTokens } from './oauth.js';
+import { spawn } from 'node:child_process';
 
-// ── ANSI helpers ─────────────────────────────────────────────
-
-const SPINNER = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'.split('');
-const ESC = '\x1b[';
-const RESET = `${ESC}0m`;
-const BOLD = `${ESC}1m`;
-const DIM = `${ESC}2m`;
-
-const bold = s => `${BOLD}${s}${RESET}`;
-const dim = s => `${DIM}${s}${RESET}`;
-const fg = (c, s) => `${ESC}${c}m${s}${RESET}`;
-const green = s => fg(32, s);
-const yellow = s => fg(33, s);
-const red = s => fg(31, s);
-const cyan = s => fg(36, s);
-const gray = s => fg(90, s);
-
-const ANSI_RE = /\x1b\[[0-9;]*m/g;
-const strip = s => s.replace(ANSI_RE, '');
-const vw = s => strip(s).length;
-
-function rpad(s, w) {
-  const gap = w - vw(s);
-  return gap > 0 ? s + ' '.repeat(gap) : s;
-}
-
-/** Truncate a string with ANSI codes to exactly w visible characters, then reset. */
-function truncate(s, w) {
-  let visible = 0;
-  let out = '';
-  let i = 0;
-  while (i < s.length && visible < w) {
-    if (s[i] === '\x1b') {
-      const end = s.indexOf('m', i);
-      if (end >= 0) { out += s.slice(i, end + 1); i = end + 1; continue; }
-    }
-    out += s[i];
-    visible++;
-    i++;
-  }
-  return out + RESET;
-}
-
-/** Fit a line to exactly w columns: truncate if too long, pad if too short. */
-function fitLine(s, w) {
-  const v = vw(s);
-  if (v > w) return truncate(s, w);
-  if (v < w) return s + ' '.repeat(w - v);
-  return s;
-}
-
-function formatReset(resetTs) {
-  if (!resetTs) return '';
-  const ms = resetTs - Date.now();
-  if (ms <= 0) return '';
-  const mins = Math.ceil(ms / 60000);
-  if (mins < 60) return `${mins}m`;
-  const hrs = Math.floor(mins / 60);
-  const rm = mins % 60;
-  if (hrs < 24) return rm > 0 ? `${hrs}h${rm}m` : `${hrs}h`;
-  const days = Math.floor(hrs / 24);
-  const rh = hrs % 24;
-  return rh > 0 ? `${days}d${rh}h` : `${days}d`;
-}
-
-/**
- * Render a progress bar using background colors with text overlaid.
- * The label (e.g. "2h30m" or "45%") is drawn on top of the bar.
- */
-function bar(ratio, w = 10, resetTs) {
-  const rst = formatReset(resetTs);
-
-  if (ratio == null || isNaN(ratio)) {
-    // No data — dim background, show label or dash
-    const label = rst || '-';
-    const text = label.slice(0, w);
-    const pad = w - text.length;
-    const lp = Math.floor(pad / 2);
-    const rp = pad - lp;
-    return `${ESC}100m${' '.repeat(lp)}${text}${' '.repeat(rp)}${RESET}`;
-  }
-
-  ratio = Math.max(0, Math.min(1, ratio));
-  const f = Math.round(ratio * w);
-  // Background colors: 42=green, 43=yellow, 41=red; 100=bright black (gray) for empty
-  const bg = ratio < 0.7 ? 42 : ratio < 0.9 ? 43 : 41;
-
-  // Build the label to overlay: show reset time if available, else percentage
-  const pct = (ratio * 100).toFixed(0) + '%';
-  const label = rst || pct;
-  const text = label.slice(0, w);
-  const pad = w - text.length;
-  const lp = Math.floor(pad / 2);
-  const rp = pad - lp;
-  const chars = (' '.repeat(lp) + text + ' '.repeat(rp));
-
-  // Split chars into filled (colored bg) and empty (gray bg) portions
-  const filled = chars.slice(0, f);
-  const empty = chars.slice(f);
-
-  let out = '';
-  if (filled) out += `${ESC}${bg};97m${filled}`;
-  if (empty) out += `${ESC}100;37m${empty}`;
-  out += RESET;
-  return out;
-}
+import { errorMessage } from './errors.js';
+import { accountInfoFromTokens,importCredentials } from './oauth.js';
+import { ESC, SPINNER } from './tui-style.js';
+import { render, renderAccount, renderFooter } from './tui-view.js';
 
 function timestamp() {
   return new Date().toLocaleTimeString('en-US', { hour12: false });
@@ -123,6 +21,7 @@ export class TUI {
 
     this.log = [];           // completed activity entries
     this.active = new Map(); // in-flight requests
+    this.usageOffset = 0;
     this.mode = 'normal';    // normal | select | add | input
     this.selAction = null;   // switch | remove
     this.selIdx = 0;
@@ -169,7 +68,7 @@ export class TUI {
     process.stdin.removeListener('data', this._dataHandler);
     process.stdout.removeListener('resize', this._resizeHandler);
     process.stdout.write(`${ESC}?25h${ESC}?1049l`);
-    try { process.stdin.setRawMode(false); } catch {}
+    try { process.stdin.setRawMode(false); } catch { /* stdin may no longer be a TTY. */ }
     process.stdin.pause();
   }
 
@@ -220,6 +119,11 @@ export class TUI {
     if (k === 'ctrl-c') { this.stop(); this.onQuit?.(); return; }
 
     switch (this.mode) {
+      case 'usage':
+        if (['esc', 'u', 'q'].includes(k)) this.mode = 'normal';
+        else if (['down', 'j'].includes(k)) this.usageOffset++;
+        else if (['up', 'k'].includes(k)) this.usageOffset = Math.max(0, this.usageOffset - 1);
+        break;
       case 'normal': this._keyNormal(k); break;
       case 'select': this._keySelect(k); break;
       case 'add':    this._keyAdd(k); break;
@@ -236,6 +140,7 @@ export class TUI {
     else if (k === 'r' && this.am.accounts.length > 0) {
       this.mode = 'select'; this.selAction = 'remove'; this.selIdx = 0;
     }
+    else if (k === 'u') { this.mode = 'usage'; this.usageOffset = 0; }
     else if (k === 'a') { this.mode = 'add'; }
     else if (k === 'R') { this._doSync(); }
   }
@@ -251,7 +156,7 @@ export class TUI {
         this.am.currentIndex = this.selIdx;
         this._addLog(`Switched to "${this.am.accounts[this.selIdx].name}"`);
       } else {
-        this._doRemove(this.selIdx).catch(e => this._addLog(`Remove failed: ${e.message}`));
+        this._doRemove(this.selIdx).catch(e => this._addLog(errorMessage('TUI_REMOVE_FAILED', { message: e.message })));
       }
       this.mode = 'normal';
     }
@@ -260,11 +165,12 @@ export class TUI {
 
   _keyAdd(k) {
     if (k === 'i') { this._doImport(); this.mode = 'normal'; }
+    else if (k === 'o' || k === 'd') { void this._doLogin(k === 'o' ? '--browser' : '--device-auth'); }
     else if (k === 'k') {
       this.mode = 'input';
       this.inputPrompt = 'API key';
       this.inputBuf = '';
-      this.inputCb = v => { if (v) this._doAddKey(v).catch(e => this._addLog(`Add failed: ${e.message}`)); };
+      this.inputCb = v => { if (v) this._doAddKey(v).catch(e => this._addLog(errorMessage('TUI_ADD_FAILED', { message: e.message }))); };
     }
     else if (k === 'esc' || k === 'q') { this.mode = 'normal'; }
   }
@@ -294,8 +200,23 @@ export class TUI {
         this._addLog('Config reloaded, no account changes');
       }
     } catch (e) {
-      this._addLog(`Sync failed: ${e.message}`);
+      this._addLog(errorMessage('TUI_SYNC_FAILED', { message: e.message }));
     }
+  }
+
+  async _doLogin(method) {
+    this.mode = 'normal';
+    this.stop();
+    try {
+      const code = await new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [process.argv[1], 'login', method], { stdio: 'inherit', env: process.env });
+        child.once('error', reject);
+        child.once('exit', resolve);
+      });
+      if (code === 0) await this.syncAccounts();
+    } catch (error) {
+      this._addLog(errorMessage('OAUTH_LOGIN_FAILED', { message: error.message }));
+    } finally { this.start(); }
   }
 
   async _doImport() {
@@ -327,7 +248,7 @@ export class TUI {
       await this.syncAccounts();
       this._addLog(`Imported account "${name}"`);
     } catch (e) {
-      this._addLog(`Import failed: ${e.message}`);
+      this._addLog(errorMessage('TUI_IMPORT_FAILED', { message: e.message }));
     }
   }
 
@@ -352,151 +273,7 @@ export class TUI {
 
   // ── rendering ──────────────────────────────────────
 
-  render() {
-    if (!this.running) return;
-    const W = process.stdout.columns || 80;
-    const H = process.stdout.rows || 24;
-
-    if (W < 40 || H < 8) {
-      process.stdout.write(`${ESC}H${ESC}2JTerminal too small (need 40x8+)\r\n`);
-      return;
-    }
-
-    const lines = [];
-
-    // ── Header
-    const left = bold(' TeamCodex');
-    const port = this.config.proxy?.port || 1456;
-    const right = `Port ${port} ${green('▲')} `;
-    lines.push(left + ' '.repeat(Math.max(1, W - vw(left) - vw(right))) + right);
-    lines.push(' ' + dim('─'.repeat(W - 2)));
-
-    // ── Accounts
-    if (this.am.accounts.length === 0) {
-      lines.push('');
-      lines.push(yellow('  No accounts configured. Press [a] to add one.'));
-    } else {
-      lines.push('');
-      const showBoth = W >= 70;
-      const bw = showBoth
-        ? Math.max(5, Math.min(20, Math.floor((W - 56) / 2)))
-        : Math.max(5, Math.min(20, W - 45));
-
-      for (let i = 0; i < this.am.accounts.length; i++) {
-        lines.push(this._renderAcct(i, bw, showBoth));
-      }
-    }
-
-    // ── Activity header
-    lines.push('');
-    const ac = this.active.size;
-    const acTag = ac > 0 ? `  ${cyan(ac + ' active')}` : '';
-    const aHdr = ` Activity${acTag} `;
-    lines.push(aHdr + dim('─'.repeat(Math.max(1, W - vw(aHdr)))));
-
-    // Active requests
-    const now = Date.now();
-    for (const [, r] of this.active) {
-      const el = ((now - r.started) / 1000).toFixed(1);
-      const sp = cyan(SPINNER[this.frame]);
-      const a = r.account ? ` → ${r.account}` : '';
-      lines.push(` ${sp} ${gray(r.t)}  ${r.method} ${r.path}${a} ${dim(`(${el}s...)`)}`);
-    }
-
-    // Completed log
-    const footerH = 2;
-    const space = Math.max(0, H - lines.length - footerH);
-    for (let i = 0; i < space && i < this.log.length; i++) {
-      lines.push(`   ${gray(this.log[i].t)}  ${this.log[i].msg}`);
-    }
-
-    // Pad to fill
-    while (lines.length < H - footerH) lines.push('');
-
-    // ── Footer
-    lines.push(' ' + dim('─'.repeat(W - 2)));
-    lines.push(this._renderFooter());
-
-    // Write buffer
-    let buf = `${ESC}H`;
-    for (let i = 0; i < H; i++) {
-      buf += fitLine(lines[i] || '', W);
-      if (i < H - 1) buf += '\r\n';
-    }
-    // Show cursor only in input mode
-    buf += this.mode === 'input' ? `${ESC}?25h` : `${ESC}?25l`;
-    process.stdout.write(buf);
-  }
-
-  _renderAcct(idx, bw, showBoth) {
-    const a = this.am.accounts[idx];
-    const isCur = idx === this.am.currentIndex;
-    const isSel = this.mode === 'select' && idx === this.selIdx;
-
-    // Prefix: selection marker + current marker
-    const sel = isSel ? cyan('>') : ' ';
-    const cur = isCur ? green('►') : ' ';
-
-    // Name (bold if selected)
-    const rawName = a.name.slice(0, 12).padEnd(12);
-    const name = isSel ? bold(rawName) : rawName;
-
-    // Type — show plan for ChatGPT accounts
-    const typeLabel = a.type === 'chatgpt' ? (a.planType || 'chatgpt') : a.type;
-    const type = gray(typeLabel.slice(0, 7).padEnd(7));
-
-    // Status
-    let status;
-    switch (a.status) {
-      case 'active':    status = isCur ? green('active') : 'active'; break;
-      case 'throttled': status = yellow('throttled'); break;
-      case 'exhausted': status = red('exhausted'); break;
-      case 'error':     status = red('error'); break;
-      default:          status = a.status || 'ready';
-    }
-    status = rpad(status, 10);
-
-    // Quota ratios — Codex windows (ChatGPT) or standard limits (API key)
-    const q = a.quota;
-    let r1 = null, r2 = null, l1 = '5h ', l2 = 'Wk ', t1 = null, t2 = null;
-
-    if (a.type === 'chatgpt') {
-      r1 = q.primary;
-      r2 = q.secondary;
-      t1 = q.primaryReset;
-      t2 = q.secondaryReset;
-    } else {
-      l1 = 'Tok';
-      l2 = 'Req';
-      r1 = (q.tokensLimit != null && q.tokensRemaining != null)
-        ? 1 - q.tokensRemaining / q.tokensLimit : null;
-      r2 = (q.requestsLimit != null && q.requestsRemaining != null)
-        ? 1 - q.requestsRemaining / q.requestsLimit : null;
-      t1 = q.resetsAt;
-      t2 = t1;
-    }
-
-    let line = ` ${sel}${cur} ${name} ${type} ${status} ${l1} ${bar(r1, bw, t1)}`;
-    if (showBoth) {
-      line += `  ${l2} ${bar(r2, bw, t2)}`;
-    }
-    return line;
-  }
-
-  _renderFooter() {
-    switch (this.mode) {
-      case 'normal':
-        return ` ${bold('s')}witch  ${bold('a')}dd  ${bold('r')}emove  ${bold('R')}eload  ${bold('q')}uit`;
-      case 'select': {
-        const act = this.selAction === 'switch' ? 'switch' : 'remove';
-        return ` ${dim('↑↓')} select  ${bold('Enter')} ${act}  ${bold('Esc')} cancel`;
-      }
-      case 'add':
-        return ` ${bold('i')}mport Codex CLI  ${bold('k')} API key  ${bold('Esc')} cancel`;
-      case 'input':
-        return ` ${this.inputPrompt}: ${'*'.repeat(this.inputBuf.length)}█`;
-      default:
-        return '';
-    }
-  }
+  render() { return render.call(this); }
+  _renderAcct(index, width, both) { return renderAccount.call(this, index, width, both); }
+  _renderFooter() { return renderFooter.call(this); }
 }
