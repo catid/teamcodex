@@ -1,6 +1,6 @@
 # Usage-reset mock spike
 
-Run `node --test test/usage-reset-spike.test.js`. The 20 scenarios use real loopback
+Run `bun test packages/proxy/test/usage-reset-spike.test.ts`. The 20 scenarios use real loopback
 HTTP requests and temporary configuration transactions, with mock provider bodies
 and a controllable clock. No live credentials or provider reset credits are used.
 
@@ -39,3 +39,8 @@ require the provider's idempotency contract; repeated HTTP attempts are expected
 An already-sent POST cannot be recalled by disable/reload, so uncertain outcomes
 retain their original ID. This spike does not claim distributed consensus or live
 provider acceptance. The pinned source references are in [authentication.md](authentication.md).
+
+The spike now runs under Bun 1.4.2. Its HTTP fixture closes the listener once;
+Bun's `closeAllConnections()` also stops the listener, unlike Node's behavior
+([pinned implementation](https://github.com/oven-sh/bun/blob/bun-v1.4.2/src/js/node/_http_server.ts)).
+The teardown difference does not change reservation, retry or response assertions.

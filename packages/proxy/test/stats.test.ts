@@ -2,20 +2,26 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readdir,readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import test from 'node:test';
 
-import { UsageStats } from '../src/stats.js';
+import type { AccountIdentity } from '@teamcodex/core/usage';
+import { afterEach, test } from 'bun:test';
 
-const account = { type: 'chatgpt', accountId: 'stable-id', name: 'first', accessToken: 'secret' };
+import { UsageStats } from '../src/stats.ts';
+
+const account = { type: 'chatgpt', accountId: 'stable-id', name: 'first', accessToken: 'secret' } satisfies AccountIdentity & { accessToken: string };
 const HOUR = 3600000;
-async function fixture(t) {
+const directories: string[] = [];
+afterEach(async () => {
+  await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true })));
+});
+async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), 'teamcodex-stats-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  directories.push(dir);
   return join(dir, 'usage.json');
 }
 
-test('totals and renamed-account history survive restart without storing credentials', async t => {
-  const path = await fixture(t);
+test('totals and renamed-account history survive restart without storing credentials', async () => {
+  const path = await fixture();
   let now = Date.parse('2026-09-09T23:59:00Z');
   const stats = await new UsageStats(path, { now: () => now }).load();
   stats.recordAttempt(account, false);
@@ -56,8 +62,8 @@ test('retention drops old buckets while preserving cumulative totals', () => {
   assert.equal(snapshot.totals.inputTokens, 840);
   assert.ok(Object.keys(stats.data.hours).length <= 48);
   assert.ok(Object.keys(stats.data.days).length <= 30);
-  assert.equal(snapshot.hourly.at(-1).inputTokens, 0);
-  assert.equal(snapshot.hourly.at(-2).inputTokens, 1);
+  assert.equal(snapshot.hourly.at(-1)?.inputTokens, 0);
+  assert.equal(snapshot.hourly.at(-2)?.inputTokens, 1);
 });
 
 test('invalid token counts cannot poison totals and snapshots are detached', () => {
@@ -68,14 +74,16 @@ test('invalid token counts cannot poison totals and snapshots are detached', () 
   const snapshot = stats.snapshot();
   assert.equal(snapshot.totals.inputTokens, 0);
   snapshot.totals.inputTokens = 999;
-  snapshot.hourly.at(-1).inputTokens = 999;
+  const last = snapshot.hourly.at(-1);
+  assert.ok(last);
+  last.inputTokens = 999;
   stats.account(account).inputTokens = 999;
   assert.equal(stats.snapshot().totals.inputTokens, 0);
   assert.equal(stats.account(account).inputTokens, 0);
 });
 
-test('damaged or unsupported history is preserved and reported', async t => {
-  const path = await fixture(t);
+test('damaged or unsupported history is preserved and reported', async () => {
+  const path = await fixture();
   for (const content of ['{broken', '{"version":99}', '{"version":1,"totals":{}}']) {
     await writeFile(path, content);
     const stats = await new UsageStats(path).load();
@@ -83,13 +91,13 @@ test('damaged or unsupported history is preserved and reported', async t => {
     await stats.flush();
     assert.equal(await readFile(path, 'utf8'), content);
     assert.equal(stats.snapshot().persistence, 'error');
-    assert.match(stats.snapshot().persistenceError, /Cannot load/);
+    assert.match(stats.snapshot().persistenceError ?? '', /Cannot load/);
     assert.equal(stats.snapshot().totals.outputTokens, 3);
   }
 });
 
-test('save failures remain visible and can recover on the next flush', async t => {
-  const path = await fixture(t);
+test('save failures remain visible and can recover on the next flush', async () => {
+  const path = await fixture();
   const stats = new UsageStats(join(path, 'missing-dir.json'));
   stats.recordTokens(account, 4, 5);
   await stats.flush();
@@ -101,8 +109,8 @@ test('save failures remain visible and can recover on the next flush', async t =
   assert.equal(JSON.parse(await readFile(path, 'utf8')).totals.outputTokens, 5);
 });
 
-test('records arriving during an atomic save are included by the coalesced flush', async t => {
-  const path = await fixture(t);
+test('records arriving during an atomic save are included by the coalesced flush', async () => {
+  const path = await fixture();
   const stats = new UsageStats(path);
   stats.recordTokens(account, 5, 6);
   const saving = stats.flush();

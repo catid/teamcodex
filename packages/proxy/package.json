@@ -5,7 +5,16 @@
   "type": "module",
   "exports": {
     "./retry": "./src/retry.ts",
-    "./config": "./src/config.ts"
+    "./config": "./src/config.ts",
+    "./stats": "./src/stats.ts",
+    "./auth/tokens": "./src/auth/tokens.ts",
+    "./account-manager": "./src/account-manager.ts",
+    "./accounts": "./src/accounts.ts",
+    "./usage-reset": "./src/usage-reset.ts",
+    "./auth/device": "./src/auth/device.ts",
+    "./auth/callback": "./src/auth/callback.ts",
+    "./auth/constants": "./src/auth/constants.ts",
+    "./auth/exchange": "./src/auth/exchange.ts"
   },
   "scripts": {
     "typecheck": "tsc --build"

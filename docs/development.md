@@ -14,12 +14,12 @@ in this repository.
 | --- | --- |
 | CLI dispatch, service wiring, token persistence, host Codex launch | `src/index.js` |
 | HTTP forwarding, authentication, SSE parsing, request retries | `src/server.js`, `src/retry.js` |
-| Account selection, quota state, token refresh | `src/account-manager.js` |
-| Account resolution, matching, hot reload | `src/accounts.js` |
-| Config validation, locking, atomic writes, backup/reset | `src/config.js` |
-| OAuth browser/device flows and credential import | `src/oauth.js` |
+| Account selection, quota state, token refresh | `packages/proxy/src/account-manager.ts` |
+| Account resolution, matching, hot reload | `packages/proxy/src/accounts.ts` |
+| Config validation, locking, atomic writes, backup/reset | `packages/proxy/src/config.ts` |
+| OAuth browser/device flows and credential import | `packages/proxy/src/auth/`, `src/oauth.js` (CLI handoff) |
 | Error codes, numeric identifiers, and messages | `packages/core/src/errors.ts`, [error table](errors.md) |
-| Usage polling and earned reset-credit redemption | `src/usage-reset.js` |
+| Usage polling and earned reset-credit redemption | `packages/proxy/src/usage-reset.ts` |
 | Native terminal dashboard | `src/tui.js`, `src/tui-view.js`, `src/tui-panels.js`; [extension guide](tui.md) |
 | Live diagnostic and container health probe | `src/smoke.js`, `src/healthcheck.js` |
 | Docker launcher and installation | `teamcodex.sh`, `install.sh`, `compose.yaml`, `Dockerfile` |

@@ -15,16 +15,16 @@ item is unfinished; scaffolding or a renamed extension alone does not complete i
 
 - [x] Move errors/opcodes and generated-adapter contracts to typed modules.
 - [x] Move weighted/adaptive scheduling and routing validation to typed modules.
-- [ ] Define account identities, quota, configuration and telemetry contracts.
+- [x] Define account identities, quota, configuration and telemetry contracts.
 - [ ] Unit tests run in Bun with strict type checking; no runtime I/O dependencies.
 
 ## Proxy (`packages/proxy`)
 
 - [ ] Migrate configuration transactions and credential persistence.
-- [ ] Migrate account lifecycle and explicit identity checks across awaits.
+- [x] Migrate account lifecycle and explicit identity checks across awaits.
 - [ ] Migrate OAuth, usage polling and reset reservations/idempotency.
 - [ ] Split HTTP admission, upstream attempts, retry policy and SSE accounting.
-- [ ] Migrate persistent usage history and normalized status snapshots.
+- [x] Migrate persistent usage history and normalized status snapshots.
 - [ ] Preserve cancellation, pool isolation, backpressure and bounded buffering.
 
 ## CLI / TUI (`apps/cli`)
@@ -71,3 +71,17 @@ item is unfinished; scaffolding or a renamed extension alone does not complete i
   Git-ignore test skipped. Offline OAuth: 6 tests pass.
 - These are intermediate checks; full Bun runtime, fresh-install completion and
   migrated TUI screenshot evidence remain outstanding.
+
+### Account and usage stage
+
+- Typed account lifecycle/hot reload, token import/refresh, device polling, callback
+  validation, reset coordination and usage history now live in proxy.
+- Core owns account/quota/reset/usage contracts and operator telemetry aggregation.
+- Browser orchestration and terminal handoff remain in legacy CLI pending migration.
+- History tests and all 20 usage-reset HTTP spike scenarios now run under Bun;
+  legacy routing and reset-unit tests remain regression gates.
+
+- Stage gate: strict types, ESLint, Knip and generated adapters pass; 37 Bun tests
+  and 168 legacy tests pass. Docker lifecycle: 13 pass; offline OAuth: 6 pass.
+- Next: HTTP admission/streaming seams, credential persistence callback, then CLI
+  workspace and browser/terminal orchestration. Full Bun runtime remains unfinished.

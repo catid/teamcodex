@@ -48,3 +48,10 @@ used by Bun. This is type compatibility, not a Node runtime requirement.
 Errors, routing policy, retry classification and configuration validation now live
 in core. Atomic configuration persistence and retry timing live in proxy. Legacy
 `src` modules re-export package APIs temporarily; remove them as consumers migrate.
+
+Account lifecycle, hot reload, token import/refresh, device authorization and OAuth
+callback handling now live in `packages/proxy`. Usage normalization and telemetry
+aggregation are pure core modules; reset reservations and history persistence remain
+in proxy. Browser launch/stdin/terminal presentation stay in CLI. Account identity
+checks across awaited refresh, imports and reset requests remain explicit; helper
+predicates re-read mutable state after awaits instead of trusting stale narrowing.

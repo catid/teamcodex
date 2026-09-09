@@ -9,7 +9,12 @@
     "./errors": "./src/errors.ts",
     "./routing": "./src/routing/config.ts",
     "./retry": "./src/retry.ts",
-    "./config": "./src/config.ts"
+    "./config": "./src/config.ts",
+    "./usage": "./src/usage.ts",
+    "./accounts": "./src/accounts.ts",
+    "./quota": "./src/quota.ts",
+    "./telemetry": "./src/telemetry.ts",
+    "./quota-headers": "./src/quota-headers.ts"
   },
   "scripts": {
     "typecheck": "tsc --build",
