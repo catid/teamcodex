@@ -529,6 +529,7 @@ async function statusCommand() {
       console.log(`Auto reset:     ${data.autoReset.enabled ? `enabled at ${(data.autoReset.threshold * 100).toFixed(0)}%` : 'disabled'}; checks every ${data.autoReset.pollIntervalSeconds}s\n`);
     }
 
+    if (data.rotationOrder) console.log(`Rotation order: ${data.rotationOrder.join(' → ')}\n`);
     for (const acct of data.accounts) {
       const q = acct.quota;
       const current = acct.name === data.currentAccount ? ' *' : '';

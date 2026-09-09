@@ -8,7 +8,7 @@ Prerequisites:
 
 - **Mac:** install and start [Docker Desktop for Mac](https://docs.docker.com/desktop/setup/install/mac-install/), choosing the build for your processor.
 - **Ubuntu:** install `bubblewrap` for host Codex (`sudo apt install bubblewrap`), then install [Docker Engine and the Compose plugin](https://docs.docker.com/engine/install/ubuntu/). Configure Docker access for your regular user using Docker's [Linux post-install instructions](https://docs.docker.com/engine/install/linux-postinstall/), then sign in again if your group membership changed.
-- **Both:** Git, Bash, and a host installation of [Codex CLI](https://developers.openai.com/codex/cli/). The proxy image includes Node.js; a host Node.js installation is only needed if your Codex installation method requires it or you develop TeamCodex.
+- **Both:** Git, Bash, Python 3.9+ (for the session picker), and a host installation of [Codex CLI](https://developers.openai.com/codex/cli/). The proxy image includes Node.js; a host Node.js installation is only needed if your Codex installation method requires it or you develop TeamCodex.
 
 Verify Docker before installing:
 
@@ -90,6 +90,8 @@ teamcodex status
 ```
 
 Sign into a different ChatGPT account for each login. If the browser has kept the previous account signed in, switch accounts there before authorizing. Re-authorizing the same account updates it. Every configured account participates in rotation immediately; no service restart is needed.
+
+Each proxy startup creates an independently shuffled rotation order and starts with its first account. The proxy follows that order when quota limits, rejected credentials, or transient failures require another account. Added accounts enter a random position; config and display order stay unchanged. This spreads starting accounts across independent machines without coordination. A healthy active account continues serving until rotation is needed, preserving connection reuse. `teamcodex status` includes the current `rotationOrder`.
 
 ### Device authorization
 
@@ -201,12 +203,15 @@ Arguments pass through to Codex without shell evaluation:
 teamcodex run resume
 teamcodex run resume --last
 teamcodex resume
+teamcodex resume --all
 teamcodex fork
 teamcodex run "fix the tests"
 teamcodex run --safe exec "explain this repository"
 ```
 
 Codex allows one active writer per session. If `resume` reports **already has an active writer**, that session is still open in another Codex process, including a detached tmux session. Return to its existing tmux pane, or exit that Codex process with `/quit` before resuming it elsewhere. To continue a separate branch while the original stays open, use `teamcodex fork SESSION_ID` (or `teamcodex fork` for the picker). Forking creates a new conversation with the saved history; see the [official OpenAI command reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli#codex-fork). Do not delete a live writer's lock file.
+
+The Docker launcher's resume/fork picker includes saved conversations from **all providers**, including sessions created with regular Codex before TeamCodex was installed. Type to search, use the arrow keys to select, and press Enter. By default it shows the current directory; `--all` includes other directories, `--last` continues the most recently updated matching session, and `--include-non-interactive` also lists `codex exec` sessions. Explicit session IDs and names pass directly to Codex. Selection uses Codex's local `thread/list` API with a 30-second deadline; it does not rewrite, copy, or fork history. The selected original session ID is resumed through the TeamCodex provider. The host and container use the same `TEAMCODEX_CODEX_HOME`/`CODEX_HOME` directory.
 
 The `env` output is a complete, shell-quoted command to copy and run. It contains a credential; avoid sharing it. The old `codex $(teamcodex env ...)` invocation is no longer valid. Prefer `teamcodex run`.
 
@@ -350,13 +355,14 @@ docker build -f test/Dockerfile.ubuntu -t teamcodex-test:ubuntu .
 docker run --rm teamcodex-test:ubuntu
 ```
 
-Tests cover concurrent config writes, reset backups and permissions, account reload/removal during active requests, token-refresh races, 401/429 rotation, SSE framing, OAuth state checks, automatic usage-reset thresholds and credit availability, persisted cooldowns and idempotent retries, and literal argument handling through the native and Docker launchers. They use fake credentials and local upstream servers. CI runs Node.js 22 and 24 on macOS and Ubuntu, plus the Docker/Ubuntu test image.
+Tests cover concurrent config writes, reset backups and permissions, account reload/removal during active requests, token-refresh races, randomized starting accounts and retry order, 401/429 rotation, SSE framing, OAuth state checks, automatic usage-reset thresholds and credit availability, persisted cooldowns and idempotent retries, cross-provider session selection, and literal argument handling through the native and Docker launchers. They use fake credentials and local upstream servers. Run the session-selection tests with `python3 -m unittest discover -s test -p 'test_*.py'`. CI runs Node.js 22 and 24 on macOS and Ubuntu, plus the Docker/Ubuntu test image.
 
 ## Troubleshooting
 
 - **Docker cannot connect:** start Docker Desktop on Mac; on Ubuntu check `systemctl status docker` and your user's Docker access. Verify `docker info` succeeds as the same user running TeamCodex.
 - **Docker works over fresh SSH but fails in tmux:** an old tmux server can retain the groups from before Docker was installed. On Linux the launcher automatically uses `sg docker` to activate your existing Docker group membership for that invocation, preserving the working directory and arguments. This requires your user to already belong to the Docker group; it does not change group membership or use sudo. If `sg` is unavailable, use a fresh login outside the old tmux server or run `newgrp docker` in the affected shell.
 - **Resume reports an active writer:** return to the original Codex pane (`tmux list-panes -a` can locate it), quit it before resuming elsewhere, or use `teamcodex fork` for a separate conversation with the same history.
+- **Older sessions missing:** update the Docker launcher and use `teamcodex resume`; it includes regular Codex and TeamCodex sessions. Use `--all` if the conversation belongs to a different directory. Check `CODEX_HOME`/`TEAMCODEX_CODEX_HOME` if using a custom history directory.
 - **No accounts configured:** run `teamcodex login --device-auth` or `teamcodex import`, then `teamcodex serve`.
 - **Port already allocated:** stop the old proxy using that port or set `TEAMCODEX_PORT` consistently for both server and launcher.
 - **Config permission denied:** check ownership of `TEAMCODEX_CONFIG_DIR`. Run the installer and launcher as your regular user. Avoid mixing root and regular-user installations.

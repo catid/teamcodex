@@ -1,4 +1,5 @@
 import { refreshAccessToken, isTokenExpiringSoon } from './oauth.js';
+import { randomInt } from 'node:crypto';
 
 function emptyQuota() {
   return {
@@ -54,9 +55,16 @@ function parseResetDuration(value) {
 }
 
 export class AccountManager {
-  constructor(accounts, switchThreshold = 0.98) {
+  constructor(accounts, switchThreshold = 0.98, { randomIndex = randomInt } = {}) {
     this.accounts = accounts.map((acct, index) => this._buildAccount(acct, index));
-    this.currentIndex = 0;
+    this.randomIndex = randomIndex;
+    // Keep config/display indexes stable; shuffle only the routing schedule.
+    this.rotationOrder = this.accounts.map(a => a.index);
+    for (let i = this.rotationOrder.length - 1; i > 0; i--) {
+      const j = this.randomIndex(i + 1);
+      [this.rotationOrder[i], this.rotationOrder[j]] = [this.rotationOrder[j], this.rotationOrder[i]];
+    }
+    this.currentIndex = this.rotationOrder[0] ?? 0;
     this.switchThreshold = switchThreshold;
   }
 
@@ -98,6 +106,13 @@ export class AccountManager {
     if (this._isAvailable(current)) {
       return current;
     }
+    return this._selectNext();
+  }
+
+  rotateAfter(account) {
+    // A pending retry can outlive a reload/removal; don't use its stale index.
+    const live = this._resolveAccount(account);
+    if (live) this.currentIndex = live.index;
     return this._selectNext();
   }
 
@@ -188,10 +203,10 @@ export class AccountManager {
   }
 
   _selectNext() {
-    const startIndex = this.currentIndex;
+    const startIndex = this.rotationOrder.indexOf(this.currentIndex);
 
     for (let i = 1; i <= this.accounts.length; i++) {
-      const idx = (startIndex + i) % this.accounts.length;
+      const idx = this.rotationOrder[(startIndex + i) % this.accounts.length];
       const account = this.accounts[idx];
 
       if (this._isAvailable(account)) {
@@ -206,7 +221,8 @@ export class AccountManager {
     // on quota, so keep serving from the least-utilized usable account until
     // upstream actually 429s it (which throttles it via markRateLimited).
     let best = null;
-    for (const account of this.accounts) {
+    for (let i = 1; i <= this.accounts.length; i++) {
+      const account = this.accounts[this.rotationOrder[(startIndex + i) % this.accounts.length]];
       if (!this._isUsable(account)) continue;
       if (!best || this._utilization(account) < this._utilization(best)) {
         best = account;
@@ -398,6 +414,7 @@ export class AccountManager {
   addAccount(acctData) {
     const index = this.accounts.length;
     this.accounts.push(this._buildAccount(acctData, index));
+    this.rotationOrder.splice(this.randomIndex(this.rotationOrder.length + 1), 0, index);
     return index;
   }
 
@@ -406,14 +423,14 @@ export class AccountManager {
    */
   removeAccount(index) {
     if (index < 0 || index >= this.accounts.length) return;
+    const current = this.accounts[this.currentIndex];
+    const position = this.rotationOrder.indexOf(index);
+    const next = this.accounts[this.rotationOrder[(position + 1) % this.rotationOrder.length]];
     this.accounts[index].index = -1;
     this.accounts.splice(index, 1);
     this.accounts.forEach((a, i) => a.index = i);
-    if (this.currentIndex >= this.accounts.length) {
-      this.currentIndex = Math.max(0, this.accounts.length - 1);
-    } else if (this.currentIndex > index) {
-      this.currentIndex--;
-    }
+    this.rotationOrder = this.rotationOrder.filter(i => i !== index).map(i => i > index ? i - 1 : i);
+    this.currentIndex = Math.max(0, current?.index >= 0 ? current.index : next?.index ?? 0);
   }
 
   /**
@@ -422,6 +439,7 @@ export class AccountManager {
   getStatus() {
     return {
       currentAccount: this.accounts[this.currentIndex]?.name,
+      rotationOrder: this.rotationOrder.map(i => this.accounts[i].name),
       switchThreshold: this.switchThreshold,
       autoReset: this.autoReset,
       accounts: this.accounts.map(a => ({

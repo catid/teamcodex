@@ -16,9 +16,28 @@ async function listen(t, server) {
 
 async function setup(t, handler, accounts = [key('first'), key('second')], config = {}, hooks = {}) {
   const upstream = await listen(t, http.createServer(handler));
-  const manager = new AccountManager(accounts);
+  const manager = new AccountManager(accounts, 0.98, { randomIndex: size => size - 1 });
   const url = await listen(t, createProxyServer(manager, { upstream, apiUpstream: upstream, proxy: { apiKey: 'proxy-secret' }, ...config }, hooks));
   return { manager, url };
+}
+
+for (const failure of ['http', 'connection']) {
+  test(`${failure} retries follow a shuffled rotation schedule`, async t => {
+    const seen = [];
+    const { url, manager } = await setup(t, (req, res) => {
+      seen.push(req.headers.authorization);
+      if (seen.length === 1) {
+        if (failure === 'connection') req.socket.destroy();
+        else { res.writeHead(503); res.end(); }
+      } else { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); }
+    }, ['first', 'second', 'third'].map(name => key(name)));
+    manager.rotationOrder = [2, 1, 0];
+    manager.currentIndex = 2;
+    const response = await fetch(`${url}/backend-api/codex/responses`, { method: 'POST', body: '{}' });
+    assert.equal(response.status, 200);
+    await response.text();
+    assert.deepEqual(seen, ['Bearer third', 'Bearer second']);
+  });
 }
 
 test('401 rejection rotates credentials and API requests use the API upstream', async t => {

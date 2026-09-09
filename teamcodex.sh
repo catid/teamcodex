@@ -115,6 +115,16 @@ case "$command_name" in
       final_args+=("$arg")
     done
     if [[ "$inserted" == 0 ]]; then final_args+=("${config_args[@]}"); fi
+    export CODEX_HOME="$TEAMCODEX_CODEX_HOME"
+    for arg in ${codex_args[@]+"${codex_args[@]}"}; do
+      if [[ "$arg" == resume || "$arg" == fork ]]; then
+        if ! command -v python3 >/dev/null 2>&1; then
+          echo 'Python 3 is required to list saved sessions across Codex providers.' >&2
+          exit 1
+        fi
+        exec python3 "$ROOT/scripts/resume.py" "${final_args[@]}"
+      fi
+    done
     exec codex "${final_args[@]}"
     ;;
   login)

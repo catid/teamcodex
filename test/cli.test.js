@@ -20,7 +20,17 @@ async function fixture(t) {
   await writeFile(configPath, JSON.stringify(config));
   const env = { ...process.env, TEAMCODEX_CONFIG: configPath, CODEX_HOME: dir, PATH: `${bin}:${process.env.PATH}` };
   await writeFile(join(bin, 'codex'), `#!/usr/bin/env node
-console.log(JSON.stringify({args:process.argv.slice(2),key:process.env.TEAMCODEX_API_KEY,cwd:process.cwd()}));
+const args = process.argv.slice(2);
+if (args[0] === 'app-server') {
+  import('node:readline').then(({createInterface}) => createInterface({input:process.stdin}).on('line', line => {
+    const request = JSON.parse(line);
+    if (!request.id) return;
+    if (request.method === 'thread/list' && request.params.modelProviders.length !== 0) process.exit(2);
+    console.log(JSON.stringify({id:request.id,result:request.method === 'thread/list' ? {
+      data:[{id:'saved-openai-session',modelProvider:'openai',cwd:process.cwd(),preview:'old conversation'}],nextCursor:null
+    } : {}}));
+  }));
+} else console.log(JSON.stringify({args,key:process.env.TEAMCODEX_API_KEY,cwd:process.cwd(),home:process.env.CODEX_HOME}));
 `, { mode: 0o755 });
   return { dir, bin, config, env };
 }
@@ -84,11 +94,17 @@ if (args.includes('env') && args.includes('--null')) {
   assert.ok(ordered.indexOf('model_reasoning_effort=low') > ordered.indexOf('exec'));
   assert.ok(ordered.indexOf('model_provider=teamcodex') < ordered.indexOf('--'));
   assert.equal(ordered.at(-1), '-literal prompt');
+  const historyDir = join(f.dir, 'selected history');
+  const customHome = await exec('/bin/bash', [link, 'run', '--safe'], {
+    env: { ...env, TEAMCODEX_CODEX_HOME: historyDir }, cwd: f.dir,
+  });
+  assert.equal(await realpath(JSON.parse(customHome.stdout).home), await realpath(historyDir));
   for (const command of ['resume', 'fork']) {
     const result = await exec('/bin/bash', [link, command, '--safe', '--last'], { env, cwd: f.dir });
     const forwarded = JSON.parse(result.stdout).args;
     assert.equal(forwarded[0], command);
-    assert.ok(forwarded.includes('--last'));
+    assert.ok(forwarded.includes('saved-openai-session'));
+    assert.ok(!forwarded.includes('--last'));
     assert.ok(forwarded.includes('model_provider=teamcodex'));
     assert.ok(!forwarded.includes('--dangerously-bypass-approvals-and-sandbox'));
   }

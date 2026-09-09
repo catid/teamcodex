@@ -285,7 +285,7 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
       await upstreamRes.body?.cancel();
       clearTimeout(timeout);
       await retryDelay(ctx.networkRetries++, controller.signal);
-      accountManager.currentIndex = (account.index + 1) % Math.max(1, accountManager.accounts.length);
+      accountManager.rotateAfter(account);
       return forwardRequest(req, res, body, accountManager, upstreams, retryCount, hooks, reqId, ctx, logDir);
     }
 
@@ -450,7 +450,7 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
       try { await retryDelay(ctx.networkRetries++, waiting.signal); }
       catch { return; }
       finally { res.removeListener('close', cancel); }
-      accountManager.currentIndex = (account.index + 1) % Math.max(1, accountManager.accounts.length);
+      accountManager.rotateAfter(account);
       return forwardRequest(req, res, body, accountManager, upstreams, retryCount, hooks, reqId, ctx, logDir);
     }
     ctx.status = 502;

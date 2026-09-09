@@ -13,6 +13,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: npm test
+      - run: python3 -m unittest discover -s test -p 'test_*.py'
       - run: bash -n teamcodex.sh install.sh install-team-repos.sh run-team-servers.sh
   docker:
     runs-on: ubuntu-latest
