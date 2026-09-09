@@ -56,7 +56,9 @@ test('Docker launcher works through a symlink with spaces and preserves host cwd
   // Mock only the Docker transport; the actual CLI emits the launch protocol.
   await writeFile(join(f.bin, 'docker'), `#!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 const args = process.argv.slice(2);
+if (args.includes('run') && !args.includes('--interactive=false')) readFileSync(0);
 if (args.includes('env') && args.includes('--null')) {
   const result = spawnSync(process.execPath, [${JSON.stringify(join(root, 'src/index.js'))}, 'env', '--null'], {stdio:'inherit'});
   process.exit(result.status);
@@ -82,4 +84,15 @@ if (args.includes('env') && args.includes('--null')) {
   assert.ok(ordered.indexOf('model_reasoning_effort=low') > ordered.indexOf('exec'));
   assert.ok(ordered.indexOf('model_provider=teamcodex') < ordered.indexOf('--'));
   assert.equal(ordered.at(-1), '-literal prompt');
+  // Commands run from an SSH-fed script must leave subsequent stdin intact.
+  const shellScript = JSON.stringify(link) + ' status\nprintf "after-status\\n"\n';
+  const { spawn } = await import('node:child_process');
+  const child = spawn('/bin/bash', [], { env, cwd: f.dir });
+  let output = '';
+  child.stdout.on('data', chunk => { output += chunk; });
+  child.stdin.end(shellScript);
+  const { once } = await import('node:events');
+  const [code] = await once(child, 'close');
+  assert.equal(code, 0);
+  assert.match(output, /after-status/);
 });

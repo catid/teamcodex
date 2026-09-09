@@ -32,8 +32,10 @@ COMPOSE=(docker compose --project-directory "$ROOT" -f "$ROOT/compose.yaml")
 
 cli() {
   local tty_args=(-T)
+  local stdin_args=(--interactive=false)
   if [[ -t 0 && -t 1 ]]; then tty_args=(); fi
-  "${COMPOSE[@]}" run --rm --no-deps ${tty_args[@]+"${tty_args[@]}"} \
+  if [[ "${1:-}" == 'login' ]]; then stdin_args=(--interactive=true); fi
+  "${COMPOSE[@]}" run --rm --no-deps "${stdin_args[@]}" ${tty_args[@]+"${tty_args[@]}"} \
     -e TEAMCODEX_SERVER_URL=http://teamcodex:1456 teamcodex "$@"
 }
 
@@ -58,7 +60,7 @@ case "$command_name" in
     "${COMPOSE[@]}" up -d --wait >&2
     launch_file="$(mktemp "${TMPDIR:-/tmp}/teamcodex-launch.XXXXXX")"
     trap 'rm -f "$launch_file"' EXIT
-    "${COMPOSE[@]}" run --rm --no-deps -T teamcodex env --null > "$launch_file"
+    "${COMPOSE[@]}" run --rm --no-deps --interactive=false -T teamcodex env --null > "$launch_file"
     launch_args=()
     while IFS= read -r -d '' value; do launch_args+=("$value"); done < "$launch_file"
     rm -f "$launch_file"

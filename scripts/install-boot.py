@@ -41,7 +41,6 @@ RemainAfterExit=yes
 User={user}
 Environment={quoted('HOME=' + str(user_home))}
 Environment={quoted('PATH=' + path)}
-WorkingDirectory={quoted(root)}
 ExecStart={quoted(root / 'teamcodex.sh')} serve --wait-timeout 120
 ExecStop={quoted(root / 'teamcodex.sh')} stop
 TimeoutStartSec=180
@@ -53,9 +52,12 @@ RestartSec=10
 WantedBy=multi-user.target
 '''
     install_file(unit.encode(), '/etc/systemd/system/teamcodex.service')
+    subprocess.run(['sudo', '-n', 'systemd-analyze', 'verify', '/etc/systemd/system/teamcodex.service'], check=True)
     subprocess.run(['sudo', '-n', 'systemctl', 'enable', 'docker.service'], check=True)
     subprocess.run(['sudo', '-n', 'systemctl', 'daemon-reload'], check=True)
-    subprocess.run(['sudo', '-n', 'systemctl', 'enable', '--now', 'teamcodex.service'], check=True)
+    subprocess.run(['sudo', '-n', 'systemctl', 'enable', 'teamcodex.service'], check=True)
+    subprocess.run(['sudo', '-n', 'systemctl', 'start', 'teamcodex.service'], check=True)
+    subprocess.run(['sudo', '-n', 'systemctl', 'is-active', '--quiet', 'teamcodex.service'], check=True)
     print('Enabled teamcodex.service at boot')
 elif sys.platform == 'darwin':
     if not shutil.which('colima'):
