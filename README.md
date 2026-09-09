@@ -49,6 +49,33 @@ Start the proxy and run Codex:
 
 `teamcodex run` retains the existing behavior of adding `--dangerously-bypass-approvals-and-sandbox`. Use `teamcodex run --safe` to let Codex use its own approval and sandbox settings. Docker isolates the proxy; Codex's commands execute on the host.
 
+## Start automatically at boot
+
+On Ubuntu, Docker Engine must be enabled and the proxy container started. To also recreate the service at boot after a `teamcodex stop`, install the included systemd unit as your regular user:
+
+```bash
+python3 scripts/install-boot.py
+sudo systemctl status teamcodex
+```
+
+On a Mac Studio or other unattended Mac, install [Colima](https://github.com/abiosoft/colima/blob/main/docs/FAQ.md#does-colima-support-autostart), Docker CLI, Compose, and Buildx with Homebrew. The installer uses a system LaunchDaemon running as your user to start Colima and TeamCodex at boot, with retries if startup fails:
+
+```bash
+brew install colima docker docker-compose docker-buildx
+mkdir -p ~/.docker/cli-plugins
+ln -sfn /opt/homebrew/opt/docker-compose/bin/docker-compose ~/.docker/cli-plugins/docker-compose
+ln -sfn /opt/homebrew/opt/docker-buildx/bin/docker-buildx ~/.docker/cli-plugins/docker-buildx
+colima start
+python3 scripts/install-boot.py
+sudo launchctl print system/com.teamcodex.boot
+```
+
+Use `/usr/local` instead of `/opt/homebrew` for Intel Homebrew. The boot installer uses the default config location and requires passwordless sudo for installing the service definition. On a MacBook using Docker Desktop, enable **Start Docker Desktop when you sign in** in Docker settings instead; Desktop requires a user login. FileVault must be unlocked after a Mac powers on before user data and services can start.
+
+The regular commands remain `teamcodex start`, `teamcodex stop`, and `teamcodex restart` on both platforms. With the optional boot unit installed, a manual stop lasts until you start it again or reboot. To disable boot startup, use `sudo systemctl disable --now teamcodex` on Ubuntu, or `sudo launchctl bootout system/com.teamcodex.boot` followed by `sudo launchctl disable system/com.teamcodex.boot` on Colima macOS. Mac boot logs are under `~/Library/Logs/TeamCodex/`.
+
+Each machine can keep independent credentials and operate without depending on another machine. Copies of the same OAuth login can later diverge when refresh tokens rotate; if needed, re-login on that machine or securely copy a current config/account login again. Keep config and backups private (mode 600); account reset cooldowns are local to each install.
+
 ## Accounts and login
 
 Add each account that should participate in rotation:
