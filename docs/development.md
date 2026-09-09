@@ -18,7 +18,7 @@ in this repository.
 | Account resolution, matching, hot reload | `src/accounts.js` |
 | Config validation, locking, atomic writes, backup/reset | `src/config.js` |
 | OAuth browser/device flows and credential import | `src/oauth.js` |
-| Error codes, numeric identifiers, and messages | `src/errors.js`, [error table](errors.md) |
+| Error codes, numeric identifiers, and messages | `packages/core/src/errors.ts`, [error table](errors.md) |
 | Usage polling and earned reset-credit redemption | `src/usage-reset.js` |
 | Native terminal dashboard | `src/tui.js`, `src/tui-view.js`, `src/tui-panels.js`; [extension guide](tui.md) |
 | Live diagnostic and container health probe | `src/smoke.js`, `src/healthcheck.js` |
@@ -67,9 +67,9 @@ only in a checkout; the runtime Docker test image intentionally contains no `.gi
 examples and lockfiles. `.dockerignore` uses an explicit allowlist
 for both Dockerfiles, with credential/log exclusions applied last.
 
-Use Node.js 22.13+ on the Node 22 line, or Node 24+, and run `npm ci` to install the
-locked development tools. `npm run check` checks generated error files, then runs
-ESLint, Knip, and `npm test` in order.
+Use Bun 1.4.2 and `bun install --frozen-lockfile` for development. Node 22.13+
+or 24+ still runs legacy entry points during migration. `bun run check` checks
+generated errors, strict types, ESLint, Knip, Bun workspace tests and legacy tests.
 Use `npm run lint` or `npm run knip` for individual checks. The test runner itself
 (`node --test`) needs no dependencies and uses temporary files, fake credentials,
 mocked commands, and local HTTP servers.
@@ -87,8 +87,8 @@ Configuration references: [ESLint](https://eslint.org/docs/latest/use/configure/
 and [Knip](https://knip.dev/reference/configuration). Knip's schema is pinned to the
 installed version. Update tool versions, lockfile, and schema together.
 
-Register application errors in `src/errors.js`; see [the error table](errors.md).
-Run `npm run errors:generate` after changing definitions. Shell and Python adapters
+Register application errors in `packages/core/src/errors.ts`; see [the error table](errors.md).
+Run `bun run errors:generate` after changing definitions. Shell and Python adapters
 are generated so host launchers do not require Node. Do not edit generated files.
 
 CI in `.github/workflows/test.yaml` runs Node.js 22 and 24 on Ubuntu and macOS,

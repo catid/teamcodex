@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
 
-import { createError, ERROR_CODES, errorResponse } from '../src/errors.js';
+import { test } from 'bun:test';
+
+import { createError, ERROR_CODES, errorResponse } from '../src/errors.ts';
 
 test('application errors have stable identifiers and preserve causes', () => {
   const cause = new Error('disk busy');

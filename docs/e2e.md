@@ -39,7 +39,7 @@ The local test suite remains separate: `npm test` does not require Docker.
 
 ## TUI screenshot review
 
-Run `npm ci`, `npx playwright install chromium`, then `npm run test:tui`.
+Run `bun install --frozen-lockfile`, `bunx playwright install chromium`, then `bun run test:tui`.
 Alternatively set `CHROMIUM_PATH` to an installed Chromium executable. `node-pty`
 requires its native install script (explicitly allowed in package.json); building
 from source requires Python and a C++ toolchain.

@@ -1,8 +1,11 @@
 # Working in TeamCodex
 
-TeamCodex is a multi-account Codex HTTP proxy. It uses plain JavaScript ES modules
-and Node.js 22.13+ (or 24+), with no runtime dependencies or build step. Keep changes consistent
-with the existing `node:` APIs, two-space indentation, single quotes, and semicolons.
+TeamCodex is a multi-account Codex HTTP proxy migrating to strict TypeScript and
+Bun 1.4.2 with isolated workspaces. Track migration work in
+[IMPLEMENTATION_CHECKLIST.md](IMPLEMENTATION_CHECKLIST.md); follow the boundaries in
+[docs/typescript-migration.md](docs/typescript-migration.md). Legacy JavaScript and
+Node commands remain temporary until equivalent Bun checks pass. Do not mark the
+migration complete while those paths still provide required behavior.
 
 Read [README.md](README.md) for commands, configuration, and installation. Read
 [docs/development.md](docs/development.md) before changing account lifecycle,
@@ -14,11 +17,18 @@ Upstream implementation references are recorded in [docs/authentication.md](docs
 
 - Use conventional, descriptive names from the language, domain, or codebase.
   Avoid invented terminology and unnecessary verbosity; clarity takes priority over brevity.
-- Register application errors in `src/errors.js` and run `npm run errors:generate`.
+- Register application errors in `packages/core/src/errors.ts` and run `bun run errors:generate`.
   Keep existing codes/opcodes stable; see [docs/errors.md](docs/errors.md).
-- Always prefer full type coverage. Use JSDoc for parameters, return values, and
-  data contracts where inference is insufficient. Avoid `any` and suppressions that
-  hide errors; validate external data at boundaries. Keep typing changes scoped.
+- Use strict TypeScript with complete boundary contracts and inferred local types.
+  Validate external data as `unknown`; avoid `any`, unsafe casts and suppressions.
+- Keep dependency direction CLI → proxy → core, with explicit package exports and
+  declared workspace dependencies. Use Bun's isolated linker and pinned runtime.
+- Apply SOLID and KISS through cohesive responsibilities, simple functions and
+  explicit I/O seams. Avoid speculative abstractions and cross-layer imports.
+- Normalize configuration, account identity, quota and telemetry at boundaries;
+  share typed contracts instead of duplicating loosely shaped objects.
+- Keep IMPLEMENTATION_CHECKLIST.md current with verified completion and maintain
+  a concise CHANGELOG.md under Unreleased (Added/Changed/Fixed as appropriate).
 - Design for testability: make relevant I/O, time, and state controllable in tests
   without adding abstractions solely for mocking. Test observable behavior.
 - Keep files and functions cohesive and easy to navigate. Split mixed responsibilities
@@ -38,12 +48,12 @@ Upstream implementation references are recorded in [docs/authentication.md](docs
 
 ## Checks
 
-Install development tools with `npm ci`. Run `npm run check` for code changes and the Bash syntax
+Install development tools with `bun install --frozen-lockfile`. Run `bun run check` for code changes and the Bash syntax
 check for launcher/install-script changes. Documentation-only edits need link,
 command, and diff review rather than a test-suite rerun.
 
 ```sh
-npm run check
+bun run check
 bash -n teamcodex.sh install.sh install-team-repos.sh run-team-servers.sh
 ```
 

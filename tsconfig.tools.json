@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": ".cache/types/tools",
+    "types": [
+      "bun"
+    ]
+  },
+  "include": [
+    "scripts/**/*.ts"
+  ],
+  "references": [
+    {
+      "path": "packages/core"
+    }
+  ]
+}

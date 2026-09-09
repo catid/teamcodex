@@ -1,0 +1,21 @@
+{
+  "name": "@teamcodex/core",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./adaptive-routing": "./src/routing/adaptive.ts",
+    "./weighted-routing": "./src/routing/weighted.ts",
+    "./errors": "./src/errors.ts",
+    "./routing": "./src/routing/config.ts",
+    "./retry": "./src/retry.ts",
+    "./config": "./src/config.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --build",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2"
+  }
+}

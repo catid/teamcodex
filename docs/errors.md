@@ -1,8 +1,8 @@
 # Error codes
 
-Generated from [src/errors.js](../src/errors.js) by `npm run errors:generate`.
+Generated from [packages/core/src/errors.ts](../packages/core/src/errors.ts) by `bun run errors:generate`.
 Edit the registry, then regenerate this table and the shell/Python message adapters.
-`npm run errors:check` detects stale generated files.
+`bun run errors:check` detects stale generated files.
 
 Codes and numeric opcodes are stable application identifiers, not HTTP statuses or
 CPU instructions. Never renumber or reuse them. Groups: 1000 config, 2000 OAuth,

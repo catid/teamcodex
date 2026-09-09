@@ -1,0 +1,19 @@
+{
+  "name": "@teamcodex/proxy",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./retry": "./src/retry.ts",
+    "./config": "./src/config.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --build"
+  },
+  "dependencies": {
+    "@teamcodex/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2"
+  }
+}

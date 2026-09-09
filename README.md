@@ -388,17 +388,18 @@ Full request/response logging is available with native `serve --log-to DIR`. To 
 ## Verification
 
 ```bash
-npm ci
-npm run check
+bun install --frozen-lockfile
+bun run check
 bash -n teamcodex.sh install.sh install-team-repos.sh run-team-servers.sh
 
 docker build -f test/Dockerfile.ubuntu -t teamcodex-test:ubuntu .
 docker run --rm teamcodex-test:ubuntu
 ```
 
-`npm run check` checks generated error tables, then runs ESLint, Knip, and the test suite. Use `npm run lint`,
-`npm run knip`, or `npm test` individually during development. These tools are
-development dependencies; the proxy has no runtime dependencies.
+`bun run check` checks generated errors, strict types, ESLint, Knip, Bun workspace tests,
+and the remaining Node tests. Use Bun 1.4.2 for development; the runtime migration
+is tracked in [IMPLEMENTATION_CHECKLIST.md](IMPLEMENTATION_CHECKLIST.md).
+The proxy depends only on internal workspaces at runtime.
 
 Application errors are centralized in [the error code table](docs/errors.md).
 Proxy-generated JSON errors include stable `code` and numeric `opcode` fields.

@@ -63,7 +63,7 @@ test('git ignores nested credentials and generated output but keeps examples', {
   for (const path of ['scratch/.env.production', 'scratch/auth.json', 'coverage/report.html', 'scripts/__pycache__/errors.pyc', 'src/debug.log']) {
     assert.doesNotThrow(() => execFileSync('git', ['check-ignore', '--no-index', path]));
   }
-  for (const path of ['config.example.json', 'package-lock.json', '.gitmodules', 'src/errors.js']) {
+  for (const path of ['config.example.json', 'bun.lock', 'packages/core/src/errors.ts', 'src/errors.js']) {
     assert.throws(() => execFileSync('git', ['check-ignore', '--no-index', path]));
   }
 });

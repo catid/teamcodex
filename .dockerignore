@@ -1,8 +1,15 @@
 # Deny by default. These are the only inputs used by our Dockerfiles.
 **
 !package.json
+!bun.lock
+!bunfig.toml
 !src/
 !src/**/*.js
+!packages/
+!packages/*/
+!packages/*/package.json
+!packages/*/src/
+!packages/*/src/**/*.ts
 !test/
 !test/**/*.test.js
 !teamcodex.sh

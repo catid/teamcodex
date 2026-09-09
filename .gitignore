@@ -35,3 +35,6 @@ __pycache__/
 # Persistent local usage history
 *.usage.json
 *.usage.json.*
+
+# Compiler cache
+.cache/
