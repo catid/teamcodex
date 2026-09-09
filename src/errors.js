@@ -1,5 +1,8 @@
 /** Stable application identifiers. Never renumber or reuse an opcode. */
 export const ERROR_CODES = Object.freeze({
+  HISTORY_INVALID: { opcode: 1013, message: 'invalid_history' },
+  STATUS_ARGUMENTS_INVALID: { opcode: 3012, message: 'Usage: teamcodex status [--compact | --json] [--no-color]' },
+  STATUS_READ_FAILED: { opcode: 3013, message: 'Cannot read TeamCodex status ({message}). Check teamcodex ps or start with teamcodex serve.' },
   OAUTH_PKCE_INVALID: { opcode: 2019, message: 'OAuth response is missing a valid authorization code or PKCE verifier' },
   DEVICE_RESPONSE_INVALID: { opcode: 2020, message: 'Device authorization response is missing its device ID or user code' },
   PROXY_OVERLOADED: { opcode: 3011, message: 'Proxy concurrency limit reached; retry later', type: 'overloaded_error' },

@@ -112,3 +112,14 @@ the live manager, and unchanged/replaced imported credentials. Provider denial a
 redemption cannot clear throttling solely because a displayed percentage decreased.
 See [authentication references](authentication.md#account-usage-reset-contract)
 for the upstream implementation and fixture evidence behind these rules.
+
+## Upstream integration (cbdbd32)
+
+The main-branch integration adds `stats.js` for persistent usage history and
+`status.js` for the CLI status dashboard, plus Python resume/update helpers.
+Run `python3 -m unittest discover -s test -p 'test_*.py'` for helper changes.
+History counters remain separate from the TUI's since-start account totals and
+from provider quota/reset-credit policy. Explicit pools retain their configured
+strategy; randomized initial/rotation order applies to legacy unpooled routing.
+The AccountManager test RNG is the fourth constructor argument, leaving the third
+argument available for routing configuration.

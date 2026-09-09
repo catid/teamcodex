@@ -13,7 +13,9 @@ source "$ROOT/scripts/errors.sh"
 export TEAMCODEX_CONFIG_DIR="${TEAMCODEX_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/teamcodex}"
 export TEAMCODEX_CODEX_HOME="${TEAMCODEX_CODEX_HOME:-${CODEX_HOME:-$HOME/.codex}}"
 TEAMCODEX_UID="$(id -u)"
-TEAMCODEX_GID="$(id -g)"
+# sg/newgrp changes the process's primary group. Keep the container's group
+# stable so switching between a fresh shell and old tmux does not recreate it.
+TEAMCODEX_GID="$(id -g "$(id -un)")"
 export TEAMCODEX_UID TEAMCODEX_GID
 export TEAMCODEX_PORT="${TEAMCODEX_PORT:-1456}"
 
@@ -21,10 +23,28 @@ if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>
   teamcodex_error DOCKER_REQUIRED
   exit 1
 fi
-if ! docker info >/dev/null 2>&1; then
+if ! docker_error="$(docker info 2>&1 >/dev/null)"; then
+  # Existing tmux servers keep the groups from when they started. Activate an
+  # already granted Docker membership for this invocation without sudo or logout.
+  if [[ "$(uname -s)" == Linux && "${TEAMCODEX_DOCKER_GROUP_RETRY:-0}" != 1 ]] &&
+      command -v sg >/dev/null 2>&1 &&
+      [[ " $(id -nG "$(id -un)") " == *' docker '* && " $(id -nG) " != *' docker '* ]]; then
+    echo 'Activating your existing Docker group membership for this command (older shell/tmux session).' >&2
+    export TEAMCODEX_DOCKER_GROUP_RETRY=1
+    group_command=exec
+    # sg executes through /bin/sh: use POSIX single quoting, including literal
+    # quotes/newlines in prompts. Bash printf %q is not portable to that shell.
+    for arg in "$ROOT/teamcodex.sh" "$@"; do
+      quoted_arg=${arg//\'/\'\\\'\'}
+      group_command+=" '$quoted_arg'"
+    done
+    exec sg docker -c "$group_command"
+  fi
   teamcodex_error DOCKER_UNAVAILABLE
+  if [[ -n "$docker_error" ]]; then printf '%s\n' "$docker_error" >&2; fi
   exit 1
 fi
+unset TEAMCODEX_DOCKER_GROUP_RETRY
 umask 077
 mkdir -p "$TEAMCODEX_CONFIG_DIR" "$TEAMCODEX_CODEX_HOME"
 TEAMCODEX_CONFIG_DIR="$(cd -- "$TEAMCODEX_CONFIG_DIR" && pwd)"
@@ -34,15 +54,29 @@ COMPOSE=(docker compose --project-directory "$ROOT" -f "$ROOT/compose.yaml")
 cli() {
   local tty_args=(-T)
   local stdin_args=(--interactive=false)
+  local columns="${COLUMNS:-}"
+  if [[ -z "$columns" && -t 1 ]] && command -v tput >/dev/null 2>&1; then
+    columns="$(tput cols 2>/dev/null || true)"
+  fi
+  local display_args=(-e "TERM=${TERM:-dumb}" -e "COLUMNS=${columns:-110}")
+  if [[ -n "${NO_COLOR+x}" ]]; then display_args+=(-e "NO_COLOR=$NO_COLOR"); fi
   if [[ -t 0 && -t 1 ]]; then tty_args=(); fi
   if [[ "${1:-}" == 'login' ]]; then stdin_args=(--interactive=true); fi
   "${COMPOSE[@]}" run --rm --no-deps "${stdin_args[@]}" ${tty_args[@]+"${tty_args[@]}"} \
-    -e TEAMCODEX_SERVER_URL=http://teamcodex:1456 teamcodex "$@"
+    "${display_args[@]}" -e TEAMCODEX_SERVER_URL=http://teamcodex:1456 teamcodex "$@"
 }
 
 command_name="${1:-serve}"
 if [[ $# -gt 0 ]]; then shift; fi
 case "$command_name" in
+  update)
+    if [[ $# -ne 0 ]]; then echo 'Usage: teamcodex update' >&2; exit 2; fi
+    if ! command -v python3 >/dev/null 2>&1; then
+      echo 'Python 3 is required for teamcodex update.' >&2
+      exit 1
+    fi
+    exec python3 "$ROOT/scripts/update.py" "$ROOT"
+    ;;
   build) "${COMPOSE[@]}" build "$@" ;;
   serve|server|start) "${COMPOSE[@]}" up -d --wait "$@" ;;
   stop) "${COMPOSE[@]}" down "$@" ;;
@@ -53,7 +87,8 @@ case "$command_name" in
     "${COMPOSE[@]}" stop teamcodex
     cli reset "$@"
     ;;
-  run)
+  run|resume|fork)
+    if [[ "$command_name" != run ]]; then set -- "$command_name" "$@"; fi
     if ! command -v codex >/dev/null 2>&1; then
       teamcodex_error HOST_CODEX_REQUIRED
       exit 1
@@ -95,6 +130,16 @@ case "$command_name" in
       final_args+=("$arg")
     done
     if [[ "$inserted" == 0 ]]; then final_args+=("${config_args[@]}"); fi
+    export CODEX_HOME="$TEAMCODEX_CODEX_HOME"
+    for arg in ${codex_args[@]+"${codex_args[@]}"}; do
+      if [[ "$arg" == resume || "$arg" == fork ]]; then
+        if ! command -v python3 >/dev/null 2>&1; then
+          echo 'Python 3 is required to list saved sessions across Codex providers.' >&2
+          exit 1
+        fi
+        exec python3 "$ROOT/scripts/resume.py" "${final_args[@]}"
+      fi
+    done
     exec codex "${final_args[@]}"
     ;;
   login)
@@ -108,7 +153,9 @@ case "$command_name" in
     ;;
   help|--help|-h)
     echo 'Docker: teamcodex build | serve | stop | restart | logs | ps'
+    echo 'Update: teamcodex update (pull latest, build, and wait for service health)'
     echo 'Host Codex: teamcodex run [--safe] [Codex arguments]'
+    echo 'Sessions: teamcodex resume [Codex arguments] | fork [Codex arguments]'
     echo 'Reset: teamcodex reset (stops server; keeps accounts and creates a backup)'
     cli help
     ;;

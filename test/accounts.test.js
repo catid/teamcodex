@@ -6,6 +6,68 @@ import { findConfigAccount, resolveAccounts, syncAccountsFromDisk } from '../src
 
 const key = (name, apiKey = name) => ({ name, type: 'apikey', apiKey, accountId: null });
 
+test('starting account and rotation schedule are shuffled without changing config indexes', () => {
+  const accounts = ['a', 'b', 'c', 'd'].map(name => key(name));
+  const manager = new AccountManager(accounts, 0.98, undefined, { randomIndex: () => 0 });
+  assert.deepEqual(manager.accounts.map(a => a.name), ['a', 'b', 'c', 'd']);
+  assert.deepEqual(manager.getStatus().rotationOrder, ['b', 'c', 'd', 'a']);
+  assert.equal(manager.getActiveAccount().name, 'b');
+  const seen = [];
+  for (let i = 0; i < accounts.length; i++) {
+    const account = manager.getActiveAccount();
+    seen.push(account.name);
+    manager.markRateLimited(account, 60);
+  }
+  assert.deepEqual(seen, ['b', 'c', 'd', 'a']);
+  assert.equal(manager.getActiveAccount(), null);
+});
+
+test('every permutation and initial account is reachable with uniform shuffle draws', () => {
+  const orders = new Set();
+  const starts = new Map();
+  for (let first = 0; first < 3; first++) {
+    for (let second = 0; second < 2; second++) {
+      const draws = [first, second];
+      const manager = new AccountManager(['a', 'b', 'c'].map(name => key(name)), 0.98, undefined, { randomIndex: () => draws.shift() });
+      orders.add(manager.getStatus().rotationOrder.join(','));
+      const name = manager.getActiveAccount().name;
+      starts.set(name, (starts.get(name) || 0) + 1);
+    }
+  }
+  assert.equal(orders.size, 6);
+  assert.deepEqual([...starts.values()], [2, 2, 2]);
+});
+
+test('random schedule survives removal, insertion, and identity replacement', async () => {
+  const manager = new AccountManager(['a', 'b', 'c'].map(name => key(name)), 0.98, undefined, { randomIndex: () => 0 });
+  const current = manager.getActiveAccount();
+  assert.equal(current.name, 'b');
+  manager.removeAccount(0);
+  assert.equal(manager.getActiveAccount(), current);
+  manager.addAccount(key('d'));
+  assert.deepEqual(manager.getStatus().rotationOrder, ['d', 'b', 'c']);
+  manager.removeAccount(current.index);
+  assert.equal(manager.getActiveAccount().name, 'c');
+  const mem = { accounts: [key('c'), key('d')] };
+  await syncAccountsFromDisk({ accounts: [{ name: 'c', type: 'chatgpt', accountId: 'new', accessToken: 'new' }, key('d')] }, mem, manager);
+  assert.equal(manager.getActiveAccount().accountId, 'new');
+  assert.equal(manager.rotateAfter(manager.getActiveAccount()).name, 'd');
+  manager.removeAccount(1);
+  manager.removeAccount(0);
+  assert.equal(manager.getActiveAccount(), null);
+  manager.addAccount(key('only'));
+  assert.equal(manager.getActiveAccount().name, 'only');
+});
+
+test('transient retry rotation and near-quota ties follow the shuffled schedule', () => {
+  const manager = new AccountManager(['a', 'b', 'c'].map(name => key(name)), 0.98, undefined, { randomIndex: () => 0 });
+  assert.equal(manager.rotateAfter(manager.accounts[1]).name, 'c');
+  manager.markAuthFailed(0);
+  assert.equal(manager.rotateAfter(manager.accounts[2]).name, 'b');
+  for (const a of manager.accounts) a.quota.primary = 0.99;
+  assert.equal(manager.rotateAfter(manager.accounts[1]).name, 'c');
+});
+
 test('hot reload adds accounts without IDs and updates the correct API key', async () => {
   const config = { accounts: [key('first')] };
   const manager = new AccountManager(config.accounts);

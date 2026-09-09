@@ -21,7 +21,17 @@ async function fixture(t) {
   await writeFile(configPath, JSON.stringify(config));
   const env = { ...process.env, TEAMCODEX_CONFIG: configPath, CODEX_HOME: dir, PATH: `${bin}:${process.env.PATH}` };
   await writeFile(join(bin, 'codex'), `#!/usr/bin/env node
-console.log(JSON.stringify({args:process.argv.slice(2),key:process.env.TEAMCODEX_API_KEY,cwd:process.cwd()}));
+const args = process.argv.slice(2);
+if (args[0] === 'app-server') {
+  import('node:readline').then(({createInterface}) => createInterface({input:process.stdin}).on('line', line => {
+    const request = JSON.parse(line);
+    if (!request.id) return;
+    if (request.method === 'thread/list' && request.params.modelProviders.length !== 0) process.exit(2);
+    console.log(JSON.stringify({id:request.id,result:request.method === 'thread/list' ? {
+      data:[{id:'saved-openai-session',modelProvider:'openai',cwd:process.cwd(),preview:'old conversation'}],nextCursor:null
+    } : {}}));
+  }));
+} else console.log(JSON.stringify({args,key:process.env.TEAMCODEX_API_KEY,cwd:process.cwd(),home:process.env.CODEX_HOME}));
 `, { mode: 0o755 });
   return { dir, bin, config, env };
 }
@@ -85,6 +95,20 @@ if (args.includes('env') && args.includes('--null')) {
   assert.ok(ordered.indexOf('model_reasoning_effort=low') > ordered.indexOf('exec'));
   assert.ok(ordered.indexOf('model_provider=teamcodex') < ordered.indexOf('--'));
   assert.equal(ordered.at(-1), '-literal prompt');
+  const historyDir = join(f.dir, 'selected history');
+  const customHome = await exec('/bin/bash', [link, 'run', '--safe'], {
+    env: { ...env, TEAMCODEX_CODEX_HOME: historyDir }, cwd: f.dir,
+  });
+  assert.equal(await realpath(JSON.parse(customHome.stdout).home), await realpath(historyDir));
+  for (const command of ['resume', 'fork']) {
+    const result = await exec('/bin/bash', [link, command, '--safe', '--last'], { env, cwd: f.dir });
+    const forwarded = JSON.parse(result.stdout).args;
+    assert.equal(forwarded[0], command);
+    assert.ok(forwarded.includes('saved-openai-session'));
+    assert.ok(!forwarded.includes('--last'));
+    assert.ok(forwarded.includes('model_provider=teamcodex'));
+    assert.ok(!forwarded.includes('--dangerously-bypass-approvals-and-sandbox'));
+  }
   // Commands run from an SSH-fed script must leave subsequent stdin intact.
   const shellScript = `${JSON.stringify(link)  } status\nprintf "after-status\\n"\n`;
   const { spawn } = await import('node:child_process');
@@ -97,3 +121,75 @@ if (args.includes('env') && args.includes('--null')) {
   assert.equal(code, 0);
   assert.match(output, /after-status/);
 });
+
+async function staleGroupFixture(t, { membership = 'stale', unavailable = false } = {}) {
+  const f = await fixture(t);
+  await writeFile(join(f.bin, 'package.json'), '{"type":"module"}');
+  const scripts = {
+    uname: 'console.log("Linux");',
+    id: `const args = process.argv.slice(2);
+if (args[0] === '-un') console.log('tester');
+else if (args[0] === '-nG') console.log(${JSON.stringify(membership)} === 'current' || (args.length > 1 && ${JSON.stringify(membership)} !== 'absent') ? 'tester docker' : 'tester');
+else if (args[0] === '-g' && args.length === 1 && process.env.TEST_DOCKER_GROUP_ACTIVE) console.log('111');
+else console.log('1000');`,
+    docker: `import { spawnSync } from 'node:child_process';
+const args = process.argv.slice(2);
+if (process.env.TEAMCODEX_GID !== '1000') { console.error('container group changed'); process.exit(2); }
+if (args[0] === 'info' && (${unavailable} || !process.env.TEST_DOCKER_GROUP_ACTIVE)) {
+  console.error('permission denied connecting to Docker socket'); process.exit(1);
+}
+if (args.includes('env') && args.includes('--null')) {
+  const result = spawnSync(process.execPath, [${JSON.stringify(join(root, 'src/index.js'))}, 'env', '--null'], { stdio: 'inherit' });
+  process.exit(result.status);
+}`,
+    sg: `import { spawnSync } from 'node:child_process';
+import { appendFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+if (args[0] !== 'docker' || args[1] !== '-c') process.exit(2);
+appendFileSync(${JSON.stringify(join(f.dir, 'sg.log'))}, 'attempt\\n');
+const result = spawnSync('/bin/sh', ['-c', args[2]], {
+  stdio: 'inherit', env: { ...process.env, TEST_DOCKER_GROUP_ACTIVE: '1' },
+});
+process.exit(result.status ?? 1);`,
+  };
+  for (const [name, script] of Object.entries(scripts)) {
+    await writeFile(join(f.bin, name), `#!/usr/bin/env node\n${script}\n`, { mode: 0o755 });
+  }
+  Object.assign(f.env, { TEAMCODEX_CONFIG_DIR: join(f.dir, 'config with spaces'), TEAMCODEX_CODEX_HOME: f.dir });
+  delete f.env.TEAMCODEX_DOCKER_GROUP_RETRY;
+  return f;
+}
+
+test('old tmux Docker groups recover while preserving literal arguments, cwd, and proxy settings', async t => {
+  const f = await staleGroupFixture(t);
+  const prompt = "quotes ' and \"; $(touch DO_NOT_CREATE) `touch DO_NOT_CREATE`\nsecond line";
+  const { stdout, stderr } = await exec('/bin/bash', [join(root, 'teamcodex.sh'), 'resume', '--safe', '--', prompt, ''], { env: f.env, cwd: f.dir });
+  const launch = JSON.parse(stdout);
+  assert.equal(launch.args[0], 'resume');
+  assert.deepEqual(launch.args.slice(-3), ['--', prompt, '']);
+  assert.ok(launch.args.includes('model_provider=teamcodex'));
+  assert.ok(!launch.args.includes('--dangerously-bypass-approvals-and-sandbox'));
+  assert.equal(launch.key, f.config.proxy.apiKey);
+  assert.equal(await realpath(launch.cwd), await realpath(f.dir));
+  assert.match(stderr, /Activating your existing Docker group membership/);
+  assert.equal(await readFile(join(f.dir, 'sg.log'), 'utf8'), 'attempt\n');
+  await assert.rejects(readFile(join(f.dir, 'DO_NOT_CREATE')), { code: 'ENOENT' });
+});
+
+test('unavailable Docker retries stale membership only once and reports the original error', async t => {
+  const f = await staleGroupFixture(t, { unavailable: true });
+  await assert.rejects(exec('/bin/bash', [join(root, 'teamcodex.sh'), 'ps'], { env: f.env }), err => {
+    assert.equal(err.code, 1);
+    assert.match(err.stderr, /permission denied connecting to Docker socket/);
+    return true;
+  });
+  assert.equal(await readFile(join(f.dir, 'sg.log'), 'utf8'), 'attempt\n');
+});
+
+for (const membership of ['absent', 'current']) {
+  test(`Docker failure does not invoke sg when group membership is ${membership}`, async t => {
+    const f = await staleGroupFixture(t, { membership });
+    await assert.rejects(exec('/bin/bash', [join(root, 'teamcodex.sh'), 'ps'], { env: f.env }), { code: 1 });
+    await assert.rejects(readFile(join(f.dir, 'sg.log')), { code: 'ENOENT' });
+  });
+}

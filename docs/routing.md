@@ -92,3 +92,7 @@ before selecting again. Metrics follow account objects across pools and are kept
 in memory; a new identity/restart starts cold. Status includes `adaptive` metrics
 (`inFlight`, `latencyMs`, `failureRate`, `samples`, and monotonic `updatedAt`).
 Adaptive feedback never reserves or spends usage-reset credits.
+
+Without explicit pools, startup and failover use a shuffled routing schedule while
+keeping display/configuration indexes stable. Explicit pool strategies retain
+their specified member ordering and adaptive/weighted scheduling behavior.

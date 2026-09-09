@@ -78,6 +78,19 @@ test('automatic reset at the threshold uses the upstream contract and verifies n
   assert.equal((await f.state()).lastResult, 'completed');
   assert.equal((await f.state()).pendingRequestId, undefined);
   assert.ok(!JSON.stringify(f.manager.getStatus()).includes('secret-account-1'));
+  assert.equal(f.manager.getStatus().usagePolling.running, false);
+  assert.equal(f.manager.getStatus().usagePolling.lastCompletedAt, new Date(f.now()).toISOString());
+  assert.equal(f.manager.getStatus().accounts[0].quotaUpdatedAt, new Date(f.now()).toISOString());
+  assert.equal(f.manager.getStatus().accounts[0].usageReset.nextEligibleAt, new Date(f.now() + 3600000).toISOString());
+});
+
+test('additional quota windows keep their names, percentages and reset times', () => {
+  const now = Date.now();
+  const result = normalizeUsage({ ...usage(10), additional_rate_limits: [{ limit_name: 'Special model', rate_limit: {
+    primary_window: { used_percent: 99, reset_after_seconds: 60, limit_window_seconds: 3600 },
+  } }] }, now);
+  assert.equal(result.utilization, 0.99);
+  assert.deepEqual(result.additionalQuota, [{ name: 'Special model (primary)', utilization: 0.99, resetAt: now + 60000, windowMinutes: 60 }]);
 });
 
 for (const [name, percent, credits] of [['below threshold', 97.99, 2], ['no credits', 100, 0], ['unknown credits', 100, null]]) {
@@ -107,6 +120,54 @@ test('all ChatGPT accounts, including inactive ones, are checked for available r
   const f = await fixture(t, { accounts: [account(), account('account-2')] });
   await f.monitor.check();
   assert.deepEqual(f.posts().map(r => r.headers['chatgpt-account-id']).sort(), ['account-1', 'account-2']);
+});
+
+for (const window of ['primary_window', 'secondary_window']) {
+  test(`mixed pool resets only the account whose own ${window} and credits qualify`, async t => {
+    const f = await fixture(t, { accounts: [account(), account('account-2'), account('account-3'), account('account-4')] });
+    const snapshots = {
+      'account-1': usage(0, 2),
+      'account-2': usage(20, 5),
+      'account-3': usage(100, 0),
+      'account-4': usage(100, null),
+    };
+    snapshots['account-1'].rate_limit[window].used_percent = 98;
+    // Poll a qualifying inactive account while the selected account changes
+    // and another account's usage response finishes first.
+    f.manager.currentIndex = 1;
+    let lowAccountRead;
+    const lowAccountReady = new Promise(resolve => { lowAccountRead = resolve; });
+    f.get(async (_url, init) => {
+      const id = init.headers['chatgpt-account-id'];
+      if (id === 'account-1') await lowAccountReady;
+      if (id === 'account-2') {
+        f.manager.currentIndex = 2;
+        lowAccountRead();
+      }
+      return json(snapshots[id]);
+    });
+    f.post((_url, init) => {
+      const id = init.headers['chatgpt-account-id'];
+      snapshots[id] = usage(0, 1);
+      return json({ code: 'reset' });
+    });
+    await f.monitor.check();
+    assert.deepEqual(f.posts().map(r => ({ id: r.headers['chatgpt-account-id'], auth: r.headers.authorization })),
+      [{ id: 'account-1', auth: 'Bearer secret-account-1' }]);
+    assert.deepEqual(Object.keys((await loadConfig()).usageResetState), ['chatgpt:account-1']);
+    assert.equal((await f.state()).lastResult, 'completed');
+    assert.equal(f.manager.accounts[1].quota.primary, 0.2);
+    assert.equal(f.manager.accounts[1].usageReset.availableCredits, 5);
+  });
+}
+
+test('a pool average above the threshold cannot reset an account below its own threshold', async t => {
+  const f = await fixture(t, { accounts: [account(), account('account-2')] });
+  // The mean is 98.995%, but the only account with credits is at 97.99%.
+  f.get((_url, init) => json(init.headers['chatgpt-account-id'] === 'account-1' ? usage(97.99, 5) : usage(100, 0)));
+  await f.monitor.check();
+  assert.equal(f.posts().length, 0);
+  assert.equal((await loadConfig()).usageResetState, undefined);
 });
 
 for (const outcome of ['no_credit', 'nothing_to_reset']) {

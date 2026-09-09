@@ -35,6 +35,7 @@ native TypeError to avoid recursively calling a broken registry.
 | 1010 | `CONFIG_UPSTREAM_INVALID` | {key} must be an HTTP(S) URL without credentials |
 | 1011 | `CONFIG_LOCKED` | Config is locked at {lock}. If no TeamCodex command is writing it, remove that lock directory and retry. |
 | 1012 | `ROUTING_CONFIG_INVALID` | Invalid routing configuration: check pools, unique account names, weights (1–1000), enabled flags and thresholds (0–1) |
+| 1013 | `HISTORY_INVALID` | invalid_history |
 | 2001 | `ACCESS_TOKEN_MISSING` | no access_token found (is this a ChatGPT-mode auth.json?) |
 | 2002 | `TOKEN_REFRESH_FAILED` | Token refresh failed ({status}): {message} |
 | 2003 | `TOKEN_REFRESH_INVALID` | Token refresh response had no access_token |
@@ -65,6 +66,8 @@ native TypeError to avoid recursively calling a broken registry.
 | 3009 | `UPSTREAM_TIMEOUT` | upstream_timeout |
 | 3010 | `ROUTING_POOL_UNKNOWN` | Unknown routing pool: {name} |
 | 3011 | `PROXY_OVERLOADED` | Proxy concurrency limit reached; retry later |
+| 3012 | `STATUS_ARGUMENTS_INVALID` | Usage: teamcodex status [--compact \| --json] [--no-color] |
+| 3013 | `STATUS_READ_FAILED` | Cannot read TeamCodex status ({message}). Check teamcodex ps or start with teamcodex serve. |
 | 3101 | `UPSTREAM_RESPONSE_TOO_LARGE` | Upstream response exceeds 32 MiB |
 | 3102 | `SSE_EVENT_TOO_LARGE` | SSE event buffer exceeds 1 MiB |
 | 3103 | `UPSTREAM_STREAM_EMPTY` | Upstream stream terminated before any events |

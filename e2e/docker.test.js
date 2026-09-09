@@ -54,7 +54,7 @@ test('Docker lifecycle with isolated mock providers', { timeout: 240_000 }, asyn
   config.networks = { default: { internal: true } };
   await writeFile(file, JSON.stringify(config));
   const configPath = join(configDir, 'config.json');
-  const initial = { proxy: { host: '127.0.0.1', port: 1456, apiKey: 'mock-proxy-key' }, upstream: 'http://mock:8080', apiUpstream: 'http://mock:8080', autoReset: { enabled: false }, accounts: [{ name: 'first', type: 'apikey', apiKey: 'first-key' }, { name: 'second', type: 'apikey', apiKey: 'second-key' }] };
+  const initial = { routing: { defaultPool: 'main', pools: { main: { accounts: ['first', 'second'], strategy: 'failover' } } }, proxy: { host: '127.0.0.1', port: 1456, apiKey: 'mock-proxy-key' }, upstream: 'http://mock:8080', apiUpstream: 'http://mock:8080', autoReset: { enabled: false }, accounts: [{ name: 'first', type: 'apikey', apiKey: 'first-key' }, { name: 'second', type: 'apikey', apiKey: 'second-key' }] };
   const cli = (...args) => compose('run', '--rm', '--no-deps', '-T', '-e', 'TEAMCODEX_SERVER_URL=http://teamcodex:1456', 'teamcodex', ...args);
   await t.test('initialization and invalid configuration rejection', async () => {
     await cli('init');
@@ -256,6 +256,7 @@ test('Docker lifecycle with isolated mock providers', { timeout: 240_000 }, asyn
     await cli('remove', 'second');
     await compose('stop', 'teamcodex');
     const disk = JSON.parse(await readFile(configPath, 'utf8'));
+    disk.routing.pools.main.accounts = ['chat'];
     disk.autoReset = { enabled: true, threshold: 0.98, pollIntervalSeconds: 30 };
     await writeFile(configPath, JSON.stringify(disk));
     await compose('up', '-d', '--wait', 'teamcodex');

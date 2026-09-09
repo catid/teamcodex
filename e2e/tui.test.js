@@ -154,6 +154,12 @@ test('interactive TUI states with mock requests and review screenshots', { timeo
   child.write('r');
   await capture('06-remove-account', 'select');
   child.write('\x1b');
+  child.write('s');
+  await waitFor('Enter switch');
+  child.write('k');
+  await page.waitForTimeout(50);
+  child.write('\r');
+  await waitFor('Switched to');
   const response = fetch(`http://127.0.0.1:${proxyAddress.port}/responses`, { method: 'POST', body: '{}', signal: AbortSignal.timeout(15000) });
   await capture('07-active-request', '1 active');
   assert.ok(pending);

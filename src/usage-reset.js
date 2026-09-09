@@ -51,6 +51,13 @@ export function normalizeUsage(payload, now = Date.now()) {
     usageDenied: payload?.rate_limit?.allowed === false || payload?.rate_limit?.limit_reached === true,
     utilization: Math.max(...values),
     resetCreditsAvailable: Number.isSafeInteger(credits) && credits >= 0 ? credits : null,
+    additionalQuota: (Array.isArray(payload?.additional_rate_limits) ? payload.additional_rate_limits : []).flatMap((limit, index) =>
+      ['primary_window', 'secondary_window'].map(key => {
+        const window = limit?.rate_limit?.[key];
+        return { name: `${limit?.limit_name || limit?.metered_feature || `Additional limit ${index + 1}`} (${key === 'primary_window' ? 'primary' : 'secondary'})`,
+          utilization: percentage(window?.used_percent), resetAt: resetTime(window, now),
+          windowMinutes: window?.limit_window_seconds > 0 ? window.limit_window_seconds / 60 : null };
+      }).filter(window => window.utilization !== null)),
     quota: {
       primary: percentage(primary?.used_percent),
       secondary: percentage(secondary?.used_percent),
@@ -125,7 +132,11 @@ export class UsageResetMonitor {
 
   check() {
     if (this.running) return this.running;
-    this.running = this._check().finally(() => { this.running = null; });
+    this.manager.usagePolling = { ...this.manager.usagePolling, running: true, lastStartedAt: new Date(this.now()).toISOString() };
+    this.running = this._check().finally(() => {
+      this.running = null;
+      this.manager.usagePolling = { ...this.manager.usagePolling, running: false, lastCompletedAt: new Date(this.now()).toISOString() };
+    });
     return this.running;
   }
 
@@ -211,6 +222,8 @@ export class UsageResetMonitor {
     if (!this.manager.accounts.includes(account)) return;
     const previousUsage = Math.max(account.quota.primary ?? 0, account.quota.secondary ?? 0);
     Object.assign(account.quota, snapshot.quota);
+    account.additionalQuota = snapshot.additionalQuota || [];
+    account.quotaUpdatedAt = new Date(snapshot.fetchedAt).toISOString();
     account.usageReset = {
       ...account.usageReset,
       availableCredits: snapshot.resetCreditsAvailable,
@@ -280,11 +293,15 @@ export class UsageResetMonitor {
   }
 
   publicState(state) {
+    const started = Date.parse(state.lastStartedAt || state.lastAttemptAt || '');
+    const attempted = Date.parse(state.lastAttemptAt || '');
     return {
       lastAttemptAt: state.lastAttemptAt || null,
       lastResult: state.lastResult || null,
       lastCompletedAt: state.lastCompletedAt || null,
       pending: Boolean(state.pendingRequestId),
+      nextEligibleAt: Number.isFinite(started) ? new Date(started + COOLDOWN_MS).toISOString() : null,
+      retryAt: state.pendingRequestId && Number.isFinite(attempted) ? new Date(attempted + PENDING_RETRY_MS).toISOString() : null,
     };
   }
 

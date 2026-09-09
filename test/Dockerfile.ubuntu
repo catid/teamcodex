@@ -1,5 +1,6 @@
 FROM node:24-bookworm-slim AS node
 FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 WORKDIR /workspace
 COPY package.json ./
@@ -7,5 +8,7 @@ COPY src/ ./src/
 COPY test/ ./test/
 COPY teamcodex.sh ./
 COPY scripts/errors.sh ./scripts/errors.sh
+COPY scripts/resume.py scripts/update.py ./scripts/
+RUN chmod -R a+rX /workspace
 USER ubuntu
 CMD ["node", "--test"]

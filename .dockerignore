@@ -8,6 +8,9 @@
 !teamcodex.sh
 !scripts/
 !scripts/errors.sh
+!scripts/resume.py
+!scripts/update.py
+!test/test_*.py
 
 # Defense in depth: never send credentials or generated artifacts in allowed trees.
 **/node_modules/**

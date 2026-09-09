@@ -8,7 +8,7 @@ Prerequisites:
 
 - **Mac:** install and start [Docker Desktop for Mac](https://docs.docker.com/desktop/setup/install/mac-install/), choosing the build for your processor.
 - **Ubuntu:** install `bubblewrap` for host Codex (`sudo apt install bubblewrap`), then install [Docker Engine and the Compose plugin](https://docs.docker.com/engine/install/ubuntu/). Configure Docker access for your regular user using Docker's [Linux post-install instructions](https://docs.docker.com/engine/install/linux-postinstall/), then sign in again if your group membership changed.
-- **Both:** Git, Bash, and a host installation of [Codex CLI](https://developers.openai.com/codex/cli/). The proxy image includes Node.js; a host Node.js installation is only needed if your Codex installation method requires it or you develop TeamCodex.
+- **Both:** Git, Bash, Python 3.9+ (for updates and the session picker), and a host installation of [Codex CLI](https://developers.openai.com/codex/cli/). The proxy image includes Node.js; a host Node.js installation is only needed if your Codex installation method requires it or you develop TeamCodex.
 
 Verify Docker before installing:
 
@@ -91,6 +91,8 @@ teamcodex status
 
 Sign into a different ChatGPT account for each login. If the browser has kept the previous account signed in, switch accounts there before authorizing. Re-authorizing the same account updates it. Every configured account participates in rotation immediately; no service restart is needed.
 
+Each proxy startup creates an independently shuffled rotation order and starts with its first account. The proxy follows that order when quota limits, rejected credentials, or transient failures require another account. Added accounts enter a random position; config and display order stay unchanged. This spreads starting accounts across independent machines without coordination. A healthy active account continues serving until rotation is needed, preserving connection reuse. `teamcodex status` includes the current `rotationOrder`.
+
 ### Device authorization
 
 Docker login uses device authorization on both operating systems:
@@ -132,6 +134,8 @@ API key support is experimental and uses your OpenAI platform account. The proxy
 
 TeamCodex checks every ChatGPT account at startup and every five minutes, including accounts currently waiting for their usage limits to reset. It reads the provider's usage windows and available **earned reset credits**. At or above 98% usage in the most-used reported window, an account with a confirmed available credit automatically redeems one. Accounts require a known ChatGPT account ID for automatic redemption; `login` and normal Codex imports populate it.
 
+The threshold applies separately to each account's own usage and credit balance. Pool averages, the number of accounts polled, and the currently selected account do not determine eligibility. For example, if account A is at 99% and account B is at 20%, only A qualifies for a new redemption, using A's credits and credentials. Conversely, an account at 97.99% remains ineligible even when the pool average exceeds 98%. The check uses the highest utilization across that account's reported windows, including its five-hour and weekly windows.
+
 This implements the provider contract inspected in [Bifrost's ChatGPT reset controller](https://github.com/c0ldfront/bifrost/blob/fa8ee27/deploy/oauth/pi-account.mjs) and its [reset policies](https://github.com/c0ldfront/bifrost/blob/fa8ee27/plugins/oauthprovider/README.md). TeamCodex uses a threshold for each account, fitting its account rotation model.
 
 The defaults are enabled, including when an older config omits this section:
@@ -167,11 +171,26 @@ Each attempt waits at most 60 seconds for headers and 120 seconds between respon
 
 When every account is unavailable, the proxy allows up to five seconds for a coalesced usage/reset recovery check, then returns a bounded response with `Retry-After`. Usage polling handles three accounts concurrently so one slow account does not block the whole pool. Fresh reduced usage can restore a throttled account. Request and buffered response bodies are limited to 32 MiB; individual SSE events to 1 MiB. Retry counts can be 0–5, timeouts 1–600 seconds. Restart after editing settings.
 
+## Updating
+
+From any directory, run:
+
+```bash
+teamcodex update
+```
+
+The command fast-forwards the installed checkout's current branch from its configured Git upstream, builds the new Docker image, and applies it with a health check. The existing service keeps running during the build; Compose replaces it when the image or service configuration changes. Existing accounts, configuration, and session history are retained. A stopped service starts after a successful build.
+
+Tracked local edits stop the update before pulling. Commit or stash those edits first. Local commits are retained; diverged branches require you to resolve the Git history. Untracked files are preserved, and Git refuses an update that would overwrite them. Updates to the same checkout are serialized with an automatically released lock. Git commands have a two-minute deadline, image builds ten minutes, and deployment waits up to two minutes for health. A failed build leaves the running service in place; a failed health check reports failure so you can inspect `teamcodex logs` and retry after fixing it.
+
+For an older installation that does not yet recognize `update`, run `git -C ~/teamcodex pull --ff-only`, then `~/teamcodex/teamcodex.sh update`. If an existing shell still invokes an older npm launcher, use `type -a teamcodex` and `rehash` (zsh) or `hash -r` (Bash) to refresh command lookup. The expected installed command is `~/.local/bin/teamcodex`, pointing to this checkout's `teamcodex.sh`.
+
 ## Commands
 
 | Command | Behavior |
 | --- | --- |
 | `teamcodex build` | Build the Docker image from this checkout |
+| `teamcodex update` | Fast-forward the installed checkout, rebuild, apply the image, and wait for service health |
 | `teamcodex serve` | Start in the background and wait for health; aliases: `start`, `server` |
 | `teamcodex stop` | Stop and remove the container and Compose network; retain host config |
 | `teamcodex restart` | Recreate the container and wait for health |
@@ -179,7 +198,9 @@ When every account is unavailable, the proxy allows up to five seconds for a coa
 | `teamcodex ps` | Show container state and health |
 | `teamcodex smoke [--model MODEL]` | Send a live hello through the running service (uses model tokens) |
 | `teamcodex smoke --rotate` | Start an isolated diagnostic on the second account, inject a 429, and verify rotation followed by a real hello; does not alter live pool state |
-| `teamcodex status` | Show live account, quota, and request statistics |
+| `teamcodex status` | Show account health, quota bars, reset credits, token totals, and usage charts |
+| `teamcodex status --compact` | Show aggregate statistics and a compact account table |
+| `teamcodex status --json` | Export the complete live status snapshot for scripts |
 | `teamcodex init` | Create config; import host Codex credentials if accounts are empty |
 | `teamcodex login` | Add or update an account using device authorization |
 | `teamcodex import` | Import a Codex credential file |
@@ -187,6 +208,8 @@ When every account is unavailable, the proxy allows up to five seconds for a coa
 | `teamcodex remove NAME` | Remove an account and reload the server |
 | `teamcodex reset` | Stop the server, back up config, reset settings and proxy key, retain accounts |
 | `teamcodex run [--safe] [ARGS...]` | Run host Codex through the proxy |
+| `teamcodex resume [ARGS...]` | Resume a saved Codex session through the proxy; shorthand for `teamcodex run resume` |
+| `teamcodex fork [ARGS...]` | Branch a saved Codex conversation into a new session through the proxy; shorthand for `teamcodex run fork` |
 | `teamcodex env` | Print a shell command for host Codex, including the proxy key |
 | `teamcodex api PATH` | Call an upstream endpoint directly with a configured account |
 | `teamcodex help` | Show command help |
@@ -196,9 +219,16 @@ Arguments pass through to Codex without shell evaluation:
 ```bash
 teamcodex run resume
 teamcodex run resume --last
+teamcodex resume
+teamcodex resume --all
+teamcodex fork
 teamcodex run "fix the tests"
 teamcodex run --safe exec "explain this repository"
 ```
+
+Codex allows one active writer per session. If `resume` reports **already has an active writer**, that session is still open in another Codex process, including a detached tmux session. Return to its existing tmux pane, or exit that Codex process with `/quit` before resuming it elsewhere. To continue a separate branch while the original stays open, use `teamcodex fork SESSION_ID` (or `teamcodex fork` for the picker). Forking creates a new conversation with the saved history; see the [official OpenAI command reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli#codex-fork). Do not delete a live writer's lock file.
+
+The Docker launcher's resume/fork picker includes saved conversations from **all providers**, including sessions created with regular Codex before TeamCodex was installed. Type to search, use the arrow keys to select, and press Enter. By default it shows the current directory; `--all` includes other directories, `--last` continues the most recently updated matching session, and `--include-non-interactive` also lists `codex exec` sessions. Explicit session IDs and names pass directly to Codex. Selection uses Codex's local `thread/list` API with a 30-second deadline; it does not rewrite, copy, or fork history. The selected original session ID is resumed through the TeamCodex provider. The host and container use the same `TEAMCODEX_CODEX_HOME`/`CODEX_HOME` directory.
 
 The `env` output is a complete, shell-quoted command to copy and run. It contains a credential; avoid sharing it. The old `codex $(teamcodex env ...)` invocation is no longer valid. Prefer `teamcodex run`.
 
@@ -210,6 +240,26 @@ teamcodex api /v1/models --account api-fallback
 ```
 
 `api` also accepts `--method POST` and `--data JSON`. It bypasses proxy rotation and uses the selected account's stored credentials.
+
+## Status and usage history
+
+```bash
+teamcodex status
+teamcodex status --compact
+teamcodex status --json > teamcodex-status.json
+```
+
+The dashboard shows the selected account and rotation order, service uptime and requests in flight, each account's plan and health, quota bars with reset countdowns, polling freshness, earned reset credits and pending redemptions, and access-token expiry and refresh availability. Unknown usage and credits remain distinct from zero. Window labels follow the provider's reported duration. Status reads the local snapshot; it does not trigger an upstream usage poll or redeem a credit.
+
+Aggregate statistics include input, output, and cached input tokens; finished client requests; upstream attempts and retries; final HTTP errors; disconnected requests; and average request duration. Cached input is a subset of input, so the total is **input + output**. A request that rotates through three accounts counts as one finished request, three attempts, and two retries. Attempts belong to the account attempted; the finished request belongs to the final routed account. Disconnected requests are included among finished requests and reported separately from HTTP errors. Status, health checks, reloads, and automatic usage/reset polling do not inflate traffic counts.
+
+Two terminal charts show tokens per hour for 24 UTC hour buckets and per day for 30 UTC day buckets, including the current partial bucket. Each chart scales to its own highest bucket; dots mean no recorded tokens. Today and last-seven-day totals use UTC calendar days. The JSON snapshot includes the bucket timestamps and exact counters for your own graphs. Use `--no-color` or `NO_COLOR=1` for plain output; colors are automatically disabled when redirected. `COLUMNS=80 teamcodex status` selects a narrower layout.
+
+History starts when the updated service starts; the dashboard displays its tracking start time. It cannot reconstruct earlier usage. Counts cover requests passing through **this machine's proxy**, across all its accounts. Provider quota percentages can include other clients and machines; they are separate from these token totals. Missing upstream token usage is not estimated. Repeated cumulative usage events within an upstream response are counted once. History is independent on each machine, with no central service dependency.
+
+Totals survive service restarts, updates, account rotation, and configuration resets. Docker stores them in `~/.config/teamcodex/config.json.usage.json` (or beside your custom config); native mode uses `<config-path>.usage.json`. The file contains counters and hashed account identifiers, with owner-only permissions, and no credentials or prompts. ChatGPT account history follows its account ID across renames; API-key accounts use their configured name. Removing an account keeps its historical contribution to the aggregate. Cumulative totals are retained indefinitely, with 48 hourly and 30 daily buckets on disk.
+
+Writes are debounced by one second and saved atomically; normal shutdown flushes pending counters. An abrupt kill or power loss can lose the latest unsaved activity. Back up this file alongside your config to preserve history. If saving fails, the dashboard reports the error while retaining current counters in memory. Damaged or unsupported history is preserved without overwriting it; stop the service and restore a valid backup, or move the damaged file aside to start fresh tracking.
 
 ## Configuration and persistence
 
@@ -313,7 +363,7 @@ To restore a backup, stop the proxy, copy the selected backup over `config.json`
 5. The usage monitor polls all ChatGPT accounts and automatically redeems available earned reset credits at the configured per-account threshold. Every redemption is persisted before the provider request and verified afterward.
 6. A 401 triggers refresh or marks the account rejected. A 429 or embedded rate-limit failure throttles the account and rotates immediately. Failed credentials remain unavailable until replaced.
 7. SSE streams track usage, including CRLF events and `data:` fields without a space. An embedded 429 can retry another account before any output is sent; after output starts, the connection closes so Codex can retry.
-8. If no account is available, the proxy returns 429 with a retry delay. Usage statistics are held in memory and reset when the proxy restarts.
+8. If no account is available, the proxy returns 429 with a retry delay. Aggregate and per-account token/traffic statistics are persisted beside the config, with hourly and daily history available in `teamcodex status`.
 
 Use TeamCodex to launch sessions using its accounts. Independently running a native Codex session against the same upstream login can still compete to refresh that login; account listing no longer refreshes tokens.
 
@@ -374,10 +424,16 @@ Browser OAuth uses S256 PKCE; device authorization uses the provider-issued veri
 at code exchange. API keys do not use PKCE. Docker login uses device authorization.
 
 Tests cover concurrent config writes, reset backups and permissions, account reload/removal during active requests, token-refresh races, 401/429 rotation, SSE framing, OAuth state checks, automatic usage-reset thresholds and credit availability, persisted cooldowns and idempotent retries, and literal argument handling through the native and Docker launchers. They use fake credentials and local upstream servers. CI runs Node.js 22 and 24 on macOS and Ubuntu, plus the Docker/Ubuntu test image.
+Statistics tests cover retry accounting, duplicate stream usage, in-flight disconnect cleanup, restart persistence, UTC bucket retention, damaged history, write recovery, and terminal layout at narrow and wide widths.
+
+Run Python helper tests with `python3 -m unittest discover -s test -p 'test_*.py'`.
 
 ## Troubleshooting
 
 - **Docker cannot connect:** start Docker Desktop on Mac; on Ubuntu check `systemctl status docker` and your user's Docker access. Verify `docker info` succeeds as the same user running TeamCodex.
+- **Docker works over fresh SSH but fails in tmux:** an old tmux server can retain the groups from before Docker was installed. On Linux the launcher automatically uses `sg docker` to activate your existing Docker group membership for that invocation, preserving the working directory and arguments. This requires your user to already belong to the Docker group; it does not change group membership or use sudo. If `sg` is unavailable, use a fresh login outside the old tmux server or run `newgrp docker` in the affected shell.
+- **Resume reports an active writer:** return to the original Codex pane (`tmux list-panes -a` can locate it), quit it before resuming elsewhere, or use `teamcodex fork` for a separate conversation with the same history.
+- **Older sessions missing:** update the Docker launcher and use `teamcodex resume`; it includes regular Codex and TeamCodex sessions. Use `--all` if the conversation belongs to a different directory. Check `CODEX_HOME`/`TEAMCODEX_CODEX_HOME` if using a custom history directory.
 - **No accounts configured:** run `teamcodex login --device-auth` or `teamcodex import`, then `teamcodex serve`.
 - **Port already allocated:** stop the old proxy using that port or set `TEAMCODEX_PORT` consistently for both server and launcher.
 - **Config permission denied:** check ownership of `TEAMCODEX_CONFIG_DIR`. Run the installer and launcher as your regular user. Avoid mixing root and regular-user installations.
@@ -386,7 +442,7 @@ Tests cover concurrent config writes, reset backups and permissions, account rel
 - **Credential rejected or revoked:** run `teamcodex login --device-auth` again; the server reloads the replacement credentials.
 - **Unhealthy container:** inspect `teamcodex logs` and `teamcodex ps`. The health check verifies the local authenticated status endpoint; it does not spend tokens or confirm upstream model access.
 - **Automatic resets are not triggering:** check `teamcodex status` for the current usage, available credits, policy, and last result. A new redemption requires the threshold, confirmed credit availability, a known account ID, and an expired one-hour cooldown. Usage checks must succeed. Unknown availability is never treated as an available credit.
-- **An old npm command runs:** check `command -v teamcodex`; put `~/.local/bin` before an old global npm bin directory in PATH, or invoke this checkout's `./teamcodex.sh` explicitly.
+- **An old npm command runs or `resume` is unknown:** check `type -a teamcodex`; put `~/.local/bin` before an old global npm bin directory in PATH, then run `rehash` in zsh or `hash -r` in Bash. Existing shells can cache the old path after installation. You can also invoke `~/teamcodex/teamcodex.sh` explicitly.
 
 ## License
 

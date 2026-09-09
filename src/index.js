@@ -14,6 +14,7 @@ accountInfoFromTokens,
 deviceCodeLogin,   importCredentials, loginOAuth, } from './oauth.js';
 import { preserveAccountRouting } from './routing.js';
 import { createProxyServer } from './server.js';
+import { UsageStats } from './stats.js';
 import { TUI } from './tui.js';
 import { devicePrompt } from './tui-login.js';
 import { ESC } from './tui-style.js';
@@ -126,6 +127,8 @@ async function serveCommand() {
   config.accounts = accounts;
   const threshold = config.switchThreshold ?? 0.98;
   const accountManager = new AccountManager(accounts, threshold, config.routing);
+  const statistics = await new UsageStats(`${getConfigPath()}.usage.json`).load();
+  accountManager.stats = statistics;
 
   // Persist refreshed tokens back to config (re-read from disk to avoid clobbering
   // accounts added externally, e.g. by `teamcodex import` while server is running)
@@ -231,12 +234,18 @@ async function serveCommand() {
     }
   });
 
+  let shuttingDown = false;
   function shutdown() {
+    if (shuttingDown) return;
+    shuttingDown = true;
     usageMonitor.stop();
     if (tui?.running) tui.stop();
-    server.close(() => process.exit(0));
-    const timer = setTimeout(() => { server.closeAllConnections(); process.exit(0); }, 5000);
+    const finish = async () => { await statistics.flush(); process.exit(0); };
+    server.close(finish);
+    const timer = setTimeout(() => { server.closeAllConnections(); setImmediate(finish); }, 5000);
     timer.unref();
+    // Leave time for normal request close events and persistence, but never hang shutdown on disk I/O.
+    setTimeout(() => process.exit(0), 8000).unref();
   }
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
@@ -524,52 +533,11 @@ async function runCommand() {
 // ── status ──────────────────────────────────────────────────
 
 async function statusCommand() {
-  const config = await loadOrCreateConfig();
-  const base = process.env.TEAMCODEX_SERVER_URL || `http://127.0.0.1:${config.proxy.port}`;
-  const url = `${base}/teamcodex/status`;
-
+  const { statusCommand: showStatus } = await import('./status.js');
   try {
-    const res = await fetch(url, { headers: { 'x-api-key': config.proxy.apiKey }, signal: AbortSignal.timeout(5000) });
-    if (!res.ok) throw createError('PROXY_HTTP_ERROR', { status: res.status });
-    const data = await res.json();
-
-    console.log(`Active account: ${data.currentAccount}`);
-    console.log(`Switch at:      ${(data.switchThreshold * 100).toFixed(0)}% usage\n`);
-    if (data.autoReset) {
-      console.log(`Auto reset:     ${data.autoReset.enabled ? `enabled at ${(data.autoReset.threshold * 100).toFixed(0)}%` : 'disabled'}; checks every ${data.autoReset.pollIntervalSeconds}s\n`);
-    }
-
-    for (const acct of data.accounts) {
-      const q = acct.quota;
-      const current = acct.name === data.currentAccount ? ' *' : '';
-      const plan = acct.planType ? `, ${acct.planType}` : '';
-
-      console.log(`  ${acct.name} (${acct.type}${plan})${current}`);
-      console.log(`    Status:   ${acct.status}`);
-      if (acct.type === 'chatgpt' && acct.usageReset) {
-        const reset = acct.usageReset;
-        console.log(`    Resets:   ${reset.availableCredits ?? 'unknown'} credit(s) available${reset.lastResult ? `; last attempt: ${reset.lastResult}` : ''}`);
-        if (reset.pending) console.log('              Pending redemption retained for a safe retry');
-        if (reset.checkError) console.log(`              Usage check unavailable: ${reset.checkError}`);
-      }
-
-      if (q.primary != null || q.secondary != null) {
-        const p = q.primary != null ? `${(q.primary * 100).toFixed(1)  }%` : '-';
-        const s = q.secondary != null ? `${(q.secondary * 100).toFixed(1)  }%` : '-';
-        console.log(`    5h:       ${p} used    Weekly: ${s} used`);
-      } else {
-        const tok = q.tokensLimit ? `${((1 - q.tokensRemaining / q.tokensLimit) * 100).toFixed(1)  }%` : '-';
-        const req = q.requestsLimit ? `${((1 - q.requestsRemaining / q.requestsLimit) * 100).toFixed(1)  }%` : '-';
-        console.log(`    Tokens:   ${tok} used    Requests: ${req} used`);
-      }
-
-      console.log(`    Total:    ${acct.usage.totalInputTokens + acct.usage.totalOutputTokens} tokens, ${acct.usage.totalRequests} requests`);
-      if (acct.rateLimitedUntil) console.log(`    Throttled until: ${acct.rateLimitedUntil}`);
-      console.log('');
-    }
-  } catch {
-    console.error(errorMessage('PROXY_UNREACHABLE', { port: config.proxy.port }));
-    console.error('Is the server running? Start with: teamcodex serve');
+    await showStatus(await loadOrCreateConfig(), args.slice(1));
+  } catch (error) {
+    console.error(error.message);
     process.exit(1);
   }
 }
@@ -713,7 +681,8 @@ Commands:
   run [args...]       Run Codex through the proxy; args pass through to codex
                       (e.g. "teamcodex run resume", "teamcodex run <prompt>")
   smoke [--rotate]    Test a live hello; --rotate injects 429 in an isolated proxy
-  status              Show proxy & account status (live)
+  status [--compact]  Show account health, token totals, and usage charts
+  status --json       Print the complete status snapshot for scripts
   init                Create config and import existing Codex login if empty
   reset               Reset settings and proxy key; back up config, keep accounts
   accounts            List configured accounts
