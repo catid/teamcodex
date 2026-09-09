@@ -198,7 +198,9 @@ For an older installation that does not yet recognize `update`, run `git -C ~/te
 | `teamcodex ps` | Show container state and health |
 | `teamcodex smoke [--model MODEL]` | Send a live hello through the running service (uses model tokens) |
 | `teamcodex smoke --rotate` | Start an isolated diagnostic on the second account, inject a 429, and verify rotation followed by a real hello; does not alter live pool state |
-| `teamcodex status` | Show live account, quota, and request statistics |
+| `teamcodex status` | Show account health, quota bars, reset credits, token totals, and usage charts |
+| `teamcodex status --compact` | Show aggregate statistics and a compact account table |
+| `teamcodex status --json` | Export the complete live status snapshot for scripts |
 | `teamcodex init` | Create config; import host Codex credentials if accounts are empty |
 | `teamcodex login` | Add or update an account using device authorization |
 | `teamcodex import` | Import a Codex credential file |
@@ -238,6 +240,26 @@ teamcodex api /v1/models --account api-fallback
 ```
 
 `api` also accepts `--method POST` and `--data JSON`. It bypasses proxy rotation and uses the selected account's stored credentials.
+
+## Status and usage history
+
+```bash
+teamcodex status
+teamcodex status --compact
+teamcodex status --json > teamcodex-status.json
+```
+
+The dashboard shows the selected account and rotation order, service uptime and requests in flight, each account's plan and health, quota bars with reset countdowns, polling freshness, earned reset credits and pending redemptions, and access-token expiry and refresh availability. Unknown usage and credits remain distinct from zero. Window labels follow the provider's reported duration. Status reads the local snapshot; it does not trigger an upstream usage poll or redeem a credit.
+
+Aggregate statistics include input, output, and cached input tokens; finished client requests; upstream attempts and retries; final HTTP errors; disconnected requests; and average request duration. Cached input is a subset of input, so the total is **input + output**. A request that rotates through three accounts counts as one finished request, three attempts, and two retries. Attempts belong to the account attempted; the finished request belongs to the final routed account. Disconnected requests are included among finished requests and reported separately from HTTP errors. Status, health checks, reloads, and automatic usage/reset polling do not inflate traffic counts.
+
+Two terminal charts show tokens per hour for 24 UTC hour buckets and per day for 30 UTC day buckets, including the current partial bucket. Each chart scales to its own highest bucket; dots mean no recorded tokens. Today and last-seven-day totals use UTC calendar days. The JSON snapshot includes the bucket timestamps and exact counters for your own graphs. Use `--no-color` or `NO_COLOR=1` for plain output; colors are automatically disabled when redirected. `COLUMNS=80 teamcodex status` selects a narrower layout.
+
+History starts when the updated service starts; the dashboard displays its tracking start time. It cannot reconstruct earlier usage. Counts cover requests passing through **this machine's proxy**, across all its accounts. Provider quota percentages can include other clients and machines; they are separate from these token totals. Missing upstream token usage is not estimated. Repeated cumulative usage events within an upstream response are counted once. History is independent on each machine, with no central service dependency.
+
+Totals survive service restarts, updates, account rotation, and configuration resets. Docker stores them in `~/.config/teamcodex/config.json.usage.json` (or beside your custom config); native mode uses `<config-path>.usage.json`. The file contains counters and hashed account identifiers, with owner-only permissions, and no credentials or prompts. ChatGPT account history follows its account ID across renames; API-key accounts use their configured name. Removing an account keeps its historical contribution to the aggregate. Cumulative totals are retained indefinitely, with 48 hourly and 30 daily buckets on disk.
+
+Writes are debounced by one second and saved atomically; normal shutdown flushes pending counters. An abrupt kill or power loss can lose the latest unsaved activity. Back up this file alongside your config to preserve history. If saving fails, the dashboard reports the error while retaining current counters in memory. Damaged or unsupported history is preserved without overwriting it; stop the service and restore a valid backup, or move the damaged file aside to start fresh tracking.
 
 ## Configuration and persistence
 
@@ -338,7 +360,7 @@ To restore a backup, stop the proxy, copy the selected backup over `config.json`
 5. The usage monitor polls all ChatGPT accounts and automatically redeems available earned reset credits at the configured per-account threshold. Every redemption is persisted before the provider request and verified afterward.
 6. A 401 triggers refresh or marks the account rejected. A 429 or embedded rate-limit failure throttles the account and rotates immediately. Failed credentials remain unavailable until replaced.
 7. SSE streams track usage, including CRLF events and `data:` fields without a space. An embedded 429 can retry another account before any output is sent; after output starts, the connection closes so Codex can retry.
-8. If no account is available, the proxy returns 429 with a retry delay. Usage statistics are held in memory and reset when the proxy restarts.
+8. If no account is available, the proxy returns 429 with a retry delay. Aggregate and per-account token/traffic statistics are persisted beside the config, with hourly and daily history available in `teamcodex status`.
 
 Use TeamCodex to launch sessions using its accounts. Independently running a native Codex session against the same upstream login can still compete to refresh that login; account listing no longer refreshes tokens.
 
@@ -371,6 +393,8 @@ docker run --rm teamcodex-test:ubuntu
 ```
 
 Tests cover concurrent config writes, reset backups and permissions, account reload/removal during active requests, token-refresh races, randomized starting accounts and retry order, 401/429 rotation, SSE framing, OAuth state checks, automatic usage-reset thresholds and credit availability, persisted cooldowns and idempotent retries, cross-provider session selection, and literal argument handling through the native and Docker launchers. They use fake credentials and local upstream servers. Run the session-selection tests with `python3 -m unittest discover -s test -p 'test_*.py'`. CI runs Node.js 22 and 24 on macOS and Ubuntu, plus the Docker/Ubuntu test image.
+
+Statistics tests cover retry accounting, duplicate stream usage, in-flight disconnect cleanup, restart persistence, UTC bucket retention, damaged history, write recovery, and terminal layout at narrow and wide widths.
 
 ## Troubleshooting
 

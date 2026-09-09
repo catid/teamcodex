@@ -4,6 +4,7 @@ import http from 'node:http';
 import { once } from 'node:events';
 import { createProxyServer } from '../src/server.js';
 import { AccountManager } from '../src/account-manager.js';
+import { UsageStats } from '../src/stats.js';
 
 const key = name => ({ name, type: 'apikey', apiKey: name });
 
@@ -17,6 +18,7 @@ async function listen(t, server) {
 async function setup(t, handler, accounts = [key('first'), key('second')], config = {}, hooks = {}) {
   const upstream = await listen(t, http.createServer(handler));
   const manager = new AccountManager(accounts, 0.98, { randomIndex: size => size - 1 });
+  manager.stats = new UsageStats();
   const url = await listen(t, createProxyServer(manager, { upstream, apiUpstream: upstream, proxy: { apiKey: 'proxy-secret' }, ...config }, hooks));
   return { manager, url };
 }
@@ -113,6 +115,8 @@ test('removal during a response never charges usage to the next account', async 
   await (await pending).text();
   assert.equal(manager.accounts[0].usage.totalInputTokens, 0);
   assert.equal(manager.accounts[0].usage.totalRequests, 0);
+  assert.equal(manager.stats.snapshot().totals.inputTokens, 50);
+  assert.equal(manager.stats.account(manager.accounts[0]).inputTokens, 0);
 });
 
 test('Docker authentication accepts bearer keys and rejects missing or wrong keys', async t => {
@@ -229,10 +233,68 @@ test('client disconnect aborts a silent upstream without further attempts', asyn
   const controller = new AbortController();
   const pending = fetch(`${url}/responses`, { signal: controller.signal });
   await arrival;
+  assert.equal((await (await fetch(`${url}/teamcodex/status`)).json()).service.inFlight, 1);
   controller.abort();
   await assert.rejects(pending);
   await closure;
   assert.equal(attempts, 1);
+  const snapshot = await (await fetch(`${url}/teamcodex/status`)).json();
+  assert.equal(snapshot.service.inFlight, 0);
+  assert.equal(snapshot.statistics.totals.requests, 1);
+  assert.equal(snapshot.statistics.totals.disconnected, 1);
+});
+
+test('statistics distinguish one client request from retries and exclude management traffic', async t => {
+  const { url, manager } = await setup(t, (req, res) => {
+    if (req.headers.authorization === 'Bearer first') { res.writeHead(429); res.end(); }
+    else res.end('{"usage":{"input_tokens":10,"output_tokens":4,"input_tokens_details":{"cached_tokens":8}}}');
+  });
+  await (await fetch(`${url}/teamcodex/reload`, { method: 'POST' })).text();
+  assert.equal((await (await fetch(`${url}/teamcodex/status`)).json()).statistics.totals.requests, 0);
+  await (await fetch(`${url}/responses`)).text();
+  const response = await fetch(`${url}/teamcodex/status`);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  const snapshot = await response.json();
+  assert.equal(snapshot.service.inFlight, 0);
+  assert.equal(snapshot.statistics.totals.requests, 1);
+  assert.equal(snapshot.statistics.totals.attempts, 2);
+  assert.equal(snapshot.statistics.totals.retries, 1);
+  assert.equal(snapshot.statistics.totals.httpErrors, 0);
+  assert.equal(snapshot.statistics.totals.inputTokens, 10);
+  assert.equal(snapshot.statistics.totals.outputTokens, 4);
+  assert.equal(snapshot.statistics.totals.cachedInputTokens, 8);
+  assert.equal(snapshot.accounts[0].totals.attempts, 1);
+  assert.equal(snapshot.accounts[0].totals.requests, 0);
+  assert.equal(snapshot.accounts[1].totals.requests, 1);
+  assert.ok(snapshot.statistics.totals.durationMs > 0);
+  assert.doesNotMatch(JSON.stringify(snapshot), /proxy-secret|apiKey|accessToken|refreshToken/);
+  assert.equal(manager.stats.snapshot().totals.requests, 1);
+});
+
+test('cumulative SSE usage, repeated events and late cached counts are counted once', async t => {
+  const { url, manager } = await setup(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const event = (type, input_tokens, output_tokens, cached_tokens) =>
+      `data: ${JSON.stringify({ type, response: { usage: { input_tokens, output_tokens, input_tokens_details: { cached_tokens } } } })}\n\n`;
+    res.end(event('response.in_progress', 10, 2, 0) + event('response.incomplete', 10, 4, 6) +
+      event('response.completed', 10, 4, 8).repeat(2) + event('response.completed', -1, 'bad', 999));
+  });
+  await (await fetch(`${url}/responses`)).text();
+  assert.equal(manager.stats.snapshot().totals.inputTokens, 10);
+  assert.equal(manager.stats.snapshot().totals.outputTokens, 4);
+  assert.equal(manager.stats.snapshot().totals.cachedInputTokens, 10);
+  assert.equal(manager.accounts[0].usage.totalInputTokens, 10);
+});
+
+test('final HTTP failures count once even when all attempts fail', async t => {
+  const { url, manager } = await setup(t, (_req, res) => { res.writeHead(503); res.end(); }, [key('first')], quickRetry);
+  await (await fetch(`${url}/responses`)).text();
+  const stats = manager.stats.snapshot().totals;
+  assert.equal(stats.requests, 1);
+  assert.equal(stats.attempts, 3);
+  assert.equal(stats.retries, 2);
+  assert.equal(stats.httpErrors, 1);
+  assert.equal(stats.disconnected, 0);
 });
 
 test('credentials rejected again after a refresh rotate instead of refreshing in a loop', async t => {

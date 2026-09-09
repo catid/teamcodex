@@ -2,6 +2,7 @@ import http from 'node:http';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { retryPolicy, TRANSIENT_STATUSES, isTransientError, retryDelay } from './retry.js';
+import { performance } from 'node:perf_hooks';
 
 
 const HOP_BY_HOP_HEADERS = new Set([
@@ -24,6 +25,8 @@ export function createProxyServer(accountManager, config, hooks = {}) {
   const proxyApiKey = config.proxy?.apiKey;
   const logDir = config.logDir || null;
   let requestCounter = 0;
+  const startedAt = new Date().toISOString();
+  let inFlight = 0;
 
   if (logDir) {
     mkdir(logDir, { recursive: true }).catch(() => {});
@@ -45,8 +48,10 @@ export function createProxyServer(accountManager, config, hooks = {}) {
 
       // Status endpoint
       if (req.method === 'GET' && req.url === '/teamcodex/status') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(accountManager.getStatus(), null, 2));
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ...accountManager.getStatus(),
+          service: { startedAt, uptimeSeconds: Math.floor((Date.now() - Date.parse(startedAt)) / 1000), inFlight },
+        }, null, 2));
         return;
       }
 
@@ -74,6 +79,19 @@ export function createProxyServer(accountManager, config, hooks = {}) {
 
       // Track request
       const reqId = ++requestCounter;
+      const requestStarted = performance.now();
+      const ctx = { account: null, accountRef: null, status: null, attempts: 0, networkRetries: 0, recovered: false, refreshed: new Set() };
+      inFlight++;
+      let recorded = false;
+      const recordRequest = () => {
+        if (recorded) return;
+        recorded = true;
+        inFlight--;
+        accountManager.stats?.recordRequest({ status: res.statusCode,
+          disconnected: !res.writableFinished, durationMs: performance.now() - requestStarted }, ctx.accountRef);
+      };
+      res.once('finish', recordRequest);
+      res.once('close', recordRequest);
       hooks.onRequestStart?.(reqId, { method: req.method, path: req.url });
 
       // Buffer request body (needed for retry on 429)
@@ -90,7 +108,6 @@ export function createProxyServer(accountManager, config, hooks = {}) {
       }
       const body = Buffer.concat(bodyChunks);
 
-      const ctx = { account: null, status: null, networkRetries: 0, recovered: false, refreshed: new Set() };
       try {
         await forwardRequest(req, res, body, accountManager, { upstream, apiUpstream, retry: retryPolicy(config) }, 0, hooks, reqId, ctx, logDir);
       } catch (err) {
@@ -203,6 +220,7 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
 
   // Track which account handles this request
   ctx.account = account.name;
+  ctx.accountRef = account;
   hooks.onRequestRouted?.(reqId, { account: account.name });
 
   // Refresh token if needed
@@ -272,6 +290,8 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
   res.once('close', onDisconnect);
   try {
     armTimeout(upstreams.retry.headerTimeoutSeconds);
+    accountManager.stats?.recordAttempt(account, ctx.attempts > 0);
+    ctx.attempts++;
     const upstreamRes = await fetch(upstreamUrl, {
       signal: controller.signal,
       method,
@@ -618,9 +638,16 @@ function inspectResponseBody(buffer, accountIndex, accountManager) {
 }
 
 function inspectResponsePayload(data, accountIndex, accountManager, state) {
-  const usage = data?.type === 'response.completed' ? data.response?.usage : data?.usage;
+  const usage = data?.response?.usage || data?.usage;
   if (usage) {
-    accountManager.updateUsage(accountIndex, usage.input_tokens, usage.output_tokens);
+    // Streams may repeat cumulative usage. Count increases rather than totals.
+    const previous = state.usage || { input: 0, output: 0, cached: 0 };
+    const count = value => Number.isSafeInteger(value) && value >= 0 ? value : 0;
+    const input = Math.max(previous.input, count(usage.input_tokens));
+    const output = Math.max(previous.output, count(usage.output_tokens));
+    const cached = Math.max(previous.cached, Math.min(input, count(usage.input_tokens_details?.cached_tokens)));
+    accountManager.updateUsage(accountIndex, input - previous.input, output - previous.output, cached - previous.cached);
+    state.usage = { input, output, cached };
   }
 
   if (!state.embedded429Seen && isEmbedded429Payload(data)) {

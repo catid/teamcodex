@@ -1,5 +1,6 @@
 import { refreshAccessToken, isTokenExpiringSoon } from './oauth.js';
 import { randomInt } from 'node:crypto';
+import { tokenCount } from './stats.js';
 
 function emptyQuota() {
   return {
@@ -249,6 +250,9 @@ export class AccountManager {
     const q = account.quota;
 
     // Codex rate limit windows (ChatGPT accounts) — percent is 0-100
+    if (Object.keys(headers).some(key => key.startsWith('x-codex-') || key.startsWith('x-ratelimit-'))) {
+      account.quotaUpdatedAt = new Date().toISOString();
+    }
     const pUsed = parseFloat(headers['x-codex-primary-used-percent']);
     const sUsed = parseFloat(headers['x-codex-secondary-used-percent']);
     if (!isNaN(pUsed)) q.primary = pUsed / 100;
@@ -302,11 +306,15 @@ export class AccountManager {
   /**
    * Update cumulative token usage from response body data.
    */
-  updateUsage(accountIndex, inputTokens, outputTokens) {
+  updateUsage(accountIndex, inputTokens, outputTokens, cachedInputTokens = 0) {
     const account = this._resolveAccount(accountIndex);
+    // An in-flight response can outlive removal. Keep its history without
+    // charging a different account that now occupies the old array index.
+    const historical = account || (accountIndex && typeof accountIndex === 'object' ? accountIndex : null);
+    if (historical) this.stats?.recordTokens(historical, inputTokens, outputTokens, cachedInputTokens);
     if (!account) return;
-    if (inputTokens) account.usage.totalInputTokens += inputTokens;
-    if (outputTokens) account.usage.totalOutputTokens += outputTokens;
+    account.usage.totalInputTokens += tokenCount(inputTokens);
+    account.usage.totalOutputTokens += tokenCount(outputTokens);
   }
 
   /**
@@ -442,11 +450,21 @@ export class AccountManager {
       rotationOrder: this.rotationOrder.map(i => this.accounts[i].name),
       switchThreshold: this.switchThreshold,
       autoReset: this.autoReset,
+      usagePolling: this.usagePolling ? { ...this.usagePolling } : null,
+      statistics: this.stats?.snapshot() || null,
       accounts: this.accounts.map(a => ({
         name: a.name,
         type: a.type,
         planType: a.planType,
         status: a.status,
+        auth: {
+          expiresAt: Number.isFinite(a.expiresAt) && a.expiresAt > 0 && a.expiresAt < 8.64e15 ? new Date(a.expiresAt).toISOString() : null,
+          refreshAvailable: Boolean(a.refreshToken), refreshing: Boolean(a._refreshPromise),
+          retryAt: Number.isFinite(a._refreshAfter) ? new Date(a._refreshAfter).toISOString() : null,
+        },
+        additionalQuota: (a.additionalQuota || []).map(q => ({ ...q })),
+        quotaUpdatedAt: a.quotaUpdatedAt || null,
+        totals: this.stats?.account(a) || null,
         quota: { ...a.quota },
         usage: { ...a.usage },
         usageReset: { ...a.usageReset },

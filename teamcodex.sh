@@ -53,10 +53,16 @@ COMPOSE=(docker compose --project-directory "$ROOT" -f "$ROOT/compose.yaml")
 cli() {
   local tty_args=(-T)
   local stdin_args=(--interactive=false)
+  local columns="${COLUMNS:-}"
+  if [[ -z "$columns" && -t 1 ]] && command -v tput >/dev/null 2>&1; then
+    columns="$(tput cols 2>/dev/null || true)"
+  fi
+  local display_args=(-e "TERM=${TERM:-dumb}" -e "COLUMNS=${columns:-110}")
+  if [[ -n "${NO_COLOR+x}" ]]; then display_args+=(-e "NO_COLOR=$NO_COLOR"); fi
   if [[ -t 0 && -t 1 ]]; then tty_args=(); fi
   if [[ "${1:-}" == 'login' ]]; then stdin_args=(--interactive=true); fi
   "${COMPOSE[@]}" run --rm --no-deps "${stdin_args[@]}" ${tty_args[@]+"${tty_args[@]}"} \
-    -e TEAMCODEX_SERVER_URL=http://teamcodex:1456 teamcodex "$@"
+    "${display_args[@]}" -e TEAMCODEX_SERVER_URL=http://teamcodex:1456 teamcodex "$@"
 }
 
 command_name="${1:-serve}"

@@ -77,6 +77,19 @@ test('automatic reset at the threshold uses the upstream contract and verifies n
   assert.equal((await f.state()).lastResult, 'completed');
   assert.equal((await f.state()).pendingRequestId, undefined);
   assert.ok(!JSON.stringify(f.manager.getStatus()).includes('secret-account-1'));
+  assert.equal(f.manager.getStatus().usagePolling.running, false);
+  assert.equal(f.manager.getStatus().usagePolling.lastCompletedAt, new Date(f.now()).toISOString());
+  assert.equal(f.manager.getStatus().accounts[0].quotaUpdatedAt, new Date(f.now()).toISOString());
+  assert.equal(f.manager.getStatus().accounts[0].usageReset.nextEligibleAt, new Date(f.now() + 3600000).toISOString());
+});
+
+test('additional quota windows keep their names, percentages and reset times', () => {
+  const now = Date.now();
+  const result = normalizeUsage({ ...usage(10), additional_rate_limits: [{ limit_name: 'Special model', rate_limit: {
+    primary_window: { used_percent: 99, reset_after_seconds: 60, limit_window_seconds: 3600 },
+  } }] }, now);
+  assert.equal(result.utilization, 0.99);
+  assert.deepEqual(result.additionalQuota, [{ name: 'Special model (primary)', utilization: 0.99, resetAt: now + 60000, windowMinutes: 60 }]);
 });
 
 for (const [name, percent, credits] of [['below threshold', 97.99, 2], ['no credits', 100, 0], ['unknown credits', 100, null]]) {
