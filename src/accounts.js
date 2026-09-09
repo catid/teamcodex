@@ -1,3 +1,4 @@
+import { errorMessage } from './errors.js';
 import { importCredentials } from './oauth.js';
 
 export function findConfigAccount(config, account) {
@@ -16,7 +17,7 @@ export async function resolveAccounts(config) {
       try {
         account = { ...account, ...await importCredentials(account.importFrom === '~/.codex/auth.json' ? undefined : account.importFrom) };
       } catch (err) {
-        console.error(`Failed to import "${account.name}": ${err.message}`);
+        console.error(errorMessage('ACCOUNT_IMPORT_FAILED', { name: account.name, message: err.message }));
         continue;
       }
     }
@@ -28,6 +29,8 @@ export async function resolveAccounts(config) {
 
 export async function syncAccountsFromDisk(diskConfig, memConfig, manager, { removeMissing = false } = {}) {
   let added = 0, updated = 0, removed = 0;
+  manager.routing = diskConfig.routing;
+  manager.switchThreshold = diskConfig.switchThreshold ?? 0.98;
   const resolved = await resolveAccounts(diskConfig);
   for (const account of resolved) {
     const idx = findConfigAccount(manager, account);
@@ -64,6 +67,9 @@ export async function syncAccountsFromDisk(diskConfig, memConfig, manager, { rem
       if (live.status === 'error') live.status = 'active';
       updated++;
     }
+    live.weight = account.weight ?? 1;
+    live.enabled = account.enabled ?? true;
+    live.switchThreshold = account.switchThreshold;
     live.name = account.name;
     live.type = account.type;
     live.accountId = account.accountId || null;

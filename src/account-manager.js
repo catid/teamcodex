@@ -1,5 +1,10 @@
-import { refreshAccessToken, isTokenExpiringSoon } from './oauth.js';
 import { randomInt } from 'node:crypto';
+
+import { accountStatus } from './account-status.js';
+import { AdaptiveRouting } from './adaptive-routing.js';
+import { createError, errorMessage } from './errors.js';
+import { isTokenExpiringSoon,refreshAccessToken } from './oauth.js';
+import { WeightedRoundRobin } from './routing.js';
 import { tokenCount } from './stats.js';
 
 function emptyQuota() {
@@ -26,9 +31,9 @@ function emptyQuota() {
  */
 function parseResetAt(value) {
   const n = Number(value);
-  if (isNaN(n)) {
+  if (Number.isNaN(n)) {
     const t = Date.parse(value);
-    return isNaN(t) ? null : t;
+    return Number.isNaN(t) ? null : t;
   }
   return n < 1e12 ? n * 1000 : n;
 }
@@ -40,8 +45,9 @@ function parseResetDuration(value) {
   if (!value) return null;
   let ms = 0;
   const re = /(\d+(?:\.\d+)?)(ms|s|m|h|d)/g;
-  let match, any = false;
-  while ((match = re.exec(value)) !== null) {
+  let match = re.exec(value);
+  let any = false;
+  while (match !== null) {
     any = true;
     const n = parseFloat(match[1]);
     switch (match[2]) {
@@ -51,12 +57,13 @@ function parseResetDuration(value) {
       case 'h': ms += n * 3_600_000; break;
       case 'd': ms += n * 86_400_000; break;
     }
+    match = re.exec(value);
   }
   return any ? Date.now() + ms : null;
 }
 
 export class AccountManager {
-  constructor(accounts, switchThreshold = 0.98, { randomIndex = randomInt } = {}) {
+  constructor(accounts, switchThreshold = 0.98, routing = undefined, { randomIndex = randomInt } = {}) {
     this.accounts = accounts.map((acct, index) => this._buildAccount(acct, index));
     this.randomIndex = randomIndex;
     // Keep config/display indexes stable; shuffle only the routing schedule.
@@ -67,6 +74,9 @@ export class AccountManager {
     }
     this.currentIndex = this.rotationOrder[0] ?? 0;
     this.switchThreshold = switchThreshold;
+    this.routing = routing;
+    this.scheduler = new WeightedRoundRobin();
+    this.adaptive = new AdaptiveRouting();
   }
 
   _resolveAccount(account) {
@@ -78,6 +88,9 @@ export class AccountManager {
     return {
       index,
       name: acct.name,
+      weight: acct.weight ?? 1,
+      enabled: acct.enabled ?? true,
+      switchThreshold: acct.switchThreshold,
       type: acct.type,
       accountId: acct.accountId || null,
       planType: acct.planType || null,
@@ -102,7 +115,21 @@ export class AccountManager {
    * Get the best available account, rotating if the current one is near quota.
    * Returns null if all accounts are exhausted.
    */
-  getActiveAccount() {
+  getActiveAccount(poolName, excluded = new Set()) {
+    if (this.routing || poolName) {
+      const name = poolName ?? this.routing?.defaultPool;
+      const pool = this.routing?.pools[name];
+      if (!pool) throw createError('ROUTING_POOL_UNKNOWN', { name: name ?? '' });
+      const members = pool.accounts.map(name => this.accounts.find(a => a.name === name)).filter(Boolean);
+      const eligible = members.filter(a => this._isUsable(a));
+      const untried = eligible.filter(a => !excluded.has(a));
+      const usable = untried.length ? untried : eligible;
+      const preferred = usable.filter(a => !this._isNearQuota(a, pool.switchThreshold));
+      const candidates = preferred.length ? preferred : usable;
+      const chosen = pool.strategy === 'failover' ? candidates[0] ?? null : this.scheduler.select(name, candidates, pool.strategy === 'adaptive' ? a => this.adaptive.weight(a, a.weight) : undefined);
+      if (chosen) this.currentIndex = chosen.index;
+      return chosen;
+    }
     const current = this.accounts[this.currentIndex];
     if (this._isAvailable(current)) {
       return current;
@@ -128,7 +155,7 @@ export class AccountManager {
    * preference for rotating to a fresher account when one exists.
    */
   _isUsable(account) {
-    if (!account) return false;
+    if (!account || !account.enabled) return false;
 
     // Check rate limit expiry
     if (account.status === 'throttled' && account.rateLimitedUntil) {
@@ -160,7 +187,8 @@ export class AccountManager {
     return used;
   }
 
-  _isNearQuota(account) {
+  _isNearQuota(account, poolThreshold) {
+    const threshold = account.switchThreshold ?? poolThreshold ?? this.switchThreshold;
     const q = account.quota;
     const now = Date.now();
 
@@ -186,18 +214,18 @@ export class AccountManager {
     }
 
     // Codex windows (ChatGPT accounts) — utilization is already 0-1
-    if (q.primary != null && q.primary >= this.switchThreshold) return true;
-    if (q.secondary != null && q.secondary >= this.switchThreshold) return true;
+    if (q.primary != null && q.primary >= threshold) return true;
+    if (q.secondary != null && q.secondary >= threshold) return true;
 
     // Standard quotas (API key accounts)
     if (q.tokensLimit != null && q.tokensRemaining != null) {
       const used = 1 - (q.tokensRemaining / q.tokensLimit);
-      if (used >= this.switchThreshold) return true;
+      if (used >= threshold) return true;
     }
 
     if (q.requestsLimit != null && q.requestsRemaining != null) {
       const used = 1 - (q.requestsRemaining / q.requestsLimit);
-      if (used >= this.switchThreshold) return true;
+      if (used >= threshold) return true;
     }
 
     return false;
@@ -255,13 +283,13 @@ export class AccountManager {
     }
     const pUsed = parseFloat(headers['x-codex-primary-used-percent']);
     const sUsed = parseFloat(headers['x-codex-secondary-used-percent']);
-    if (!isNaN(pUsed)) q.primary = pUsed / 100;
-    if (!isNaN(sUsed)) q.secondary = sUsed / 100;
+    if (!Number.isNaN(pUsed)) q.primary = pUsed / 100;
+    if (!Number.isNaN(sUsed)) q.secondary = sUsed / 100;
 
     const pWin = parseInt(headers['x-codex-primary-window-minutes'], 10);
     const sWin = parseInt(headers['x-codex-secondary-window-minutes'], 10);
-    if (!isNaN(pWin)) q.primaryWindowMins = pWin;
-    if (!isNaN(sWin)) q.secondaryWindowMins = sWin;
+    if (!Number.isNaN(pWin)) q.primaryWindowMins = pWin;
+    if (!Number.isNaN(sWin)) q.secondaryWindowMins = sWin;
 
     if (headers['x-codex-primary-reset-at']) {
       q.primaryReset = parseResetAt(headers['x-codex-primary-reset-at']);
@@ -280,10 +308,10 @@ export class AccountManager {
     const requestsLimit = parseInt(headers['x-ratelimit-limit-requests'], 10);
     const requestsRemaining = parseInt(headers['x-ratelimit-remaining-requests'], 10);
 
-    if (!isNaN(tokensLimit)) q.tokensLimit = tokensLimit;
-    if (!isNaN(tokensRemaining)) q.tokensRemaining = tokensRemaining;
-    if (!isNaN(requestsLimit)) q.requestsLimit = requestsLimit;
-    if (!isNaN(requestsRemaining)) q.requestsRemaining = requestsRemaining;
+    if (!Number.isNaN(tokensLimit)) q.tokensLimit = tokensLimit;
+    if (!Number.isNaN(tokensRemaining)) q.tokensRemaining = tokensRemaining;
+    if (!Number.isNaN(requestsLimit)) q.requestsLimit = requestsLimit;
+    if (!Number.isNaN(requestsRemaining)) q.requestsRemaining = requestsRemaining;
 
     const reset = parseResetDuration(headers['x-ratelimit-reset-tokens'])
       || parseResetDuration(headers['x-ratelimit-reset-requests']);
@@ -375,11 +403,11 @@ export class AccountManager {
         try {
           await this._onTokenRefresh?.(account.index, newTokens, refreshToken);
         } catch (err) {
-          console.error(`[TeamCodex] Failed to persist refreshed tokens: ${err.message}`);
+          console.error(errorMessage('TOKEN_PERSIST_FAILED', { message: err.message }));
         }
       } catch (err) {
         if (!this.accounts.includes(account) || account.refreshToken !== refreshToken) return;
-        console.error(`[TeamCodex] Token refresh failed for "${account.name}": ${err.message}`);
+        console.error(errorMessage('ACCOUNT_REFRESH_FAILED', { name: account.name, message: err.message }));
         // A revoked/invalid grant is permanent — stop re-attempting the
         // refresh on every request. The access token may still work until it
         // expires; after that the 401 path rotates to another account.
@@ -436,7 +464,7 @@ export class AccountManager {
     const next = this.accounts[this.rotationOrder[(position + 1) % this.rotationOrder.length]];
     this.accounts[index].index = -1;
     this.accounts.splice(index, 1);
-    this.accounts.forEach((a, i) => a.index = i);
+    this.accounts.forEach((a, i) => { a.index = i; });
     this.rotationOrder = this.rotationOrder.filter(i => i !== index).map(i => i > index ? i - 1 : i);
     this.currentIndex = Math.max(0, current?.index >= 0 ? current.index : next?.index ?? 0);
   }
@@ -450,13 +478,19 @@ export class AccountManager {
       rotationOrder: this.rotationOrder.map(i => this.accounts[i].name),
       switchThreshold: this.switchThreshold,
       autoReset: this.autoReset,
+      routing: this.routing,
       usagePolling: this.usagePolling ? { ...this.usagePolling } : null,
       statistics: this.stats?.snapshot() || null,
       accounts: this.accounts.map(a => ({
         name: a.name,
+        weight: a.weight,
+        adaptive: this.adaptive.status(a),
+        enabled: a.enabled,
+        switchThreshold: a.switchThreshold,
         type: a.type,
         planType: a.planType,
-        status: a.status,
+        status: accountStatus(a),
+        underlyingStatus: a.status,
         auth: {
           expiresAt: Number.isFinite(a.expiresAt) && a.expiresAt > 0 && a.expiresAt < 8.64e15 ? new Date(a.expiresAt).toISOString() : null,
           refreshAvailable: Boolean(a.refreshToken), refreshing: Boolean(a._refreshPromise),

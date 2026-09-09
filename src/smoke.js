@@ -1,12 +1,14 @@
 import { once } from 'node:events';
-import { loadConfig } from './config.js';
-import { resolveAccounts } from './accounts.js';
+
 import { AccountManager } from './account-manager.js';
+import { resolveAccounts } from './accounts.js';
+import { loadConfig } from './config.js';
+import { createError } from './errors.js';
 import { createProxyServer } from './server.js';
 
 export async function smokeCommand(args = []) {
   const config = await loadConfig();
-  if (!config) throw new Error('Initialize TeamCodex before running the smoke test');
+  if (!config) throw createError('SMOKE_CONFIG_MISSING');
   const modelIndex = args.indexOf('--model');
   const model = modelIndex >= 0 ? args[modelIndex + 1] : 'gpt-6-astra';
   const started = Date.now();
@@ -18,7 +20,7 @@ export async function smokeCommand(args = []) {
   try {
     if (args.includes('--rotate')) {
       const accounts = await resolveAccounts(config);
-      if (accounts.length < 2) throw new Error('Rotation smoke test requires at least two accounts');
+      if (accounts.length < 2) throw createError('SMOKE_ACCOUNTS_MISSING');
       const manager = new AccountManager(accounts, config.switchThreshold);
       manager.currentIndex = 1;
       // This isolated diagnostic uses existing access tokens only. The running
@@ -46,7 +48,7 @@ export async function smokeCommand(args = []) {
         stream: true, store: false, reasoning: { effort: 'low' },
       }),
     });
-    if (!response.ok) { await response.body?.cancel(); throw new Error(`Hello request failed: HTTP ${response.status}`); }
+    if (!response.ok) { await response.body?.cancel(); throw createError('SMOKE_HTTP_ERROR', { status: response.status }); }
     const body = await response.text();
     let output = '', completed = false;
     for (const line of body.split(/\r?\n/)) {
@@ -58,8 +60,8 @@ export async function smokeCommand(args = []) {
       if (event.type === 'response.output_text.delta') output += event.delta || '';
       if (event.type === 'response.completed' && event.response?.status === 'completed') completed = true;
     }
-    if (!completed || output.trim().toLowerCase() !== 'hello') throw new Error('Hello response was incomplete or unexpected');
-    if (args.includes('--rotate') && (injected !== 1 || new Set(routes).size < 2)) throw new Error('Account rotation was not demonstrated');
+    if (!completed || output.trim().toLowerCase() !== 'hello') throw createError('SMOKE_RESPONSE_INVALID');
+    if (args.includes('--rotate') && (injected !== 1 || new Set(routes).size < 2)) throw createError('SMOKE_ROTATION_FAILED');
     console.log(JSON.stringify({ ok: true, output: output.trim(), elapsedSeconds: (Date.now() - started) / 1000,
       ...(server ? { diagnostic: 'isolated injected 429 followed by live provider response', routes } : { service: base }) }));
   } finally {

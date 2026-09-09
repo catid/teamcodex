@@ -1,10 +1,22 @@
+# Deny by default. These are the only inputs used by our Dockerfiles.
 **
 !package.json
 !src/
-!src/**
+!src/**/*.js
 !test/
-!test/**
+!test/**/*.test.js
 !teamcodex.sh
 !scripts/
+!scripts/errors.sh
 !scripts/resume.py
 !scripts/update.py
+!test/test_*.py
+
+# Defense in depth: never send credentials or generated artifacts in allowed trees.
+**/node_modules/**
+**/.env
+**/.env.*
+**/auth.json
+**/*.log
+**/__pycache__/**
+**/*.pyc

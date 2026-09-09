@@ -1,0 +1,23 @@
+{
+  "$schema": "https://unpkg.com/knip@6.35.1/schema.json",
+  "entry": [
+    "src/healthcheck.js",
+    "e2e/mock-provider.js",
+    "e2e/redirect-auth.js",
+    "e2e/oauth-transport.js",
+    "e2e/backpressure.js"
+  ],
+  "project": [
+    "src/**/*.js",
+    "test/**/*.js",
+    "scripts/**/*.js",
+    "e2e/**/*.js"
+  ],
+  "ignoreBinaries": [
+    "codex",
+    "xdg-open"
+  ],
+  "ignoreDependencies": [
+    "@xterm/xterm"
+  ]
+}

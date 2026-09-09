@@ -1,6 +1,9 @@
 import { stripVTControlCharacters } from 'node:util';
 
+import { createError } from './errors.js';
+
 const finite = value => typeof value === 'number' && Number.isFinite(value);
+  // eslint-disable-next-line no-control-regex -- Strip or test terminal control sequences.
 const clean = value => stripVTControlCharacters(String(value ?? '')).replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, ' ');
 const time = value => typeof value === 'number' ? value : Date.parse(value || '');
 const compact = value => finite(value) ? Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(value) : '—';
@@ -199,7 +202,7 @@ export function renderStatus(data, { columns = 110, color = false, compact: brie
 
 export async function statusCommand(config, args = []) {
   if (args.some(arg => !['--json', '--compact', '--no-color'].includes(arg)) || args.includes('--json') && args.includes('--compact')) {
-    throw new Error('Usage: teamcodex status [--compact | --json] [--no-color]');
+    throw createError('STATUS_ARGUMENTS_INVALID');
   }
   const base = process.env.TEAMCODEX_SERVER_URL || `http://127.0.0.1:${config.proxy.port}`;
   let data;
@@ -207,10 +210,10 @@ export async function statusCommand(config, args = []) {
     const response = await fetch(`${base}/teamcodex/status`, {
       headers: { 'x-api-key': config.proxy.apiKey }, signal: AbortSignal.timeout(5000),
     });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (!response.ok) throw createError('PROXY_HTTP_ERROR', { status: response.status });
     data = await response.json();
   } catch (error) {
-    throw new Error(`Cannot read TeamCodex status (${error.message}). Check teamcodex ps or start with teamcodex serve.`);
+    throw createError('STATUS_READ_FAILED', { message: error.message }, { cause: error });
   }
   if (args.includes('--json')) console.log(JSON.stringify(data, null, 2));
   else console.log(renderStatus(data, {

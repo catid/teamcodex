@@ -7,6 +7,7 @@ import plistlib
 import shutil
 import subprocess
 import sys
+from errors import error_message
 import tempfile
 
 root = Path(__file__).resolve().parent.parent
@@ -23,7 +24,7 @@ def install_file(content, destination, mode='644'):
 
 
 if os.getuid() == 0:
-    sys.exit('Run this installer as the account that owns TeamCodex; it uses sudo for the service definition.')
+    sys.exit(error_message('BOOT_USER_INVALID'))
 if sys.platform.startswith('linux'):
     # systemd treats percent signs as specifiers, even inside quotes.
     def quoted(value):
@@ -61,7 +62,7 @@ WantedBy=multi-user.target
     print('Enabled teamcodex.service at boot')
 elif sys.platform == 'darwin':
     if not shutil.which('colima'):
-        sys.exit('Unattended macOS boot requires Colima. With Docker Desktop, enable its Start at login setting instead.')
+        sys.exit(error_message('BOOT_COLIMA_REQUIRED'))
     logs = user_home / 'Library/Logs/TeamCodex'
     logs.mkdir(parents=True, exist_ok=True)
     label = 'com.teamcodex.boot'
@@ -85,4 +86,4 @@ elif sys.platform == 'darwin':
     subprocess.run(['sudo', '-n', 'launchctl', 'bootstrap', 'system', destination], check=True)
     print('Enabled com.teamcodex.boot LaunchDaemon (Colima, runs as ' + user + ')')
 else:
-    sys.exit('Supported platforms: Ubuntu Linux and macOS with Colima')
+    sys.exit(error_message('BOOT_PLATFORM_UNSUPPORTED'))

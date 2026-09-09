@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { open, writeFile, rename, rm } from 'node:fs/promises';
+import { open, rename, rm,writeFile } from 'node:fs/promises';
+
+import { createError } from './errors.js';
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -39,11 +41,11 @@ export class UsageStats {
       let content;
       try {
         const info = await file.stat();
-        if (!info.isFile() || info.size > 8 * 1024 * 1024) throw new Error('invalid_history');
+        if (!info.isFile() || info.size > 8 * 1024 * 1024) throw createError('HISTORY_INVALID');
         content = await file.readFile('utf8');
       } finally { await file.close(); }
       const data = JSON.parse(content);
-      if (!valid(data)) throw new Error('invalid_history');
+      if (!valid(data)) throw createError('HISTORY_INVALID');
       // Retain only the schema fields, even if the file contains extra metadata.
       const copy = value => Object.fromEntries(FIELDS.map(key => [key, value[key]]));
       this.data = { version: 1, trackingSince: data.trackingSince, totals: copy(data.totals),
@@ -73,10 +75,15 @@ export class UsageStats {
   record(delta, account) {
     const now = this.now();
     this.prune();
-    const hour = this.data.hours[Math.floor(now / HOUR)] ??= counters();
-    const day = this.data.days[Math.floor(now / DAY)] ??= counters();
+    this.data.hours[Math.floor(now / HOUR)] ??= counters();
+    const hour = this.data.hours[Math.floor(now / HOUR)];
+    this.data.days[Math.floor(now / DAY)] ??= counters();
+    const day = this.data.days[Math.floor(now / DAY)];
     const targets = [this.data.totals, hour, day];
-    if (account) targets.push(this.data.accounts[accountKey(account)] ??= counters());
+    if (account) {
+      this.data.accounts[accountKey(account)] ??= counters();
+      targets.push(this.data.accounts[accountKey(account)]);
+    }
     for (const target of targets) for (const [key, value] of Object.entries(delta)) {
       if (FIELDS.includes(key) && Number.isFinite(value) && value >= 0) target[key] += value;
     }

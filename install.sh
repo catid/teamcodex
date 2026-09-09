@@ -2,9 +2,10 @@
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 if [[ $# -gt 1 || ( $# -eq 1 && "$1" != '--reset' ) ]]; then
-  echo 'Usage: ./install.sh [--reset]' >&2
+  teamcodex_error INSTALL_ARGUMENT_INVALID
   exit 1
 fi
+source "$ROOT/scripts/errors.sh"
 export TEAMCODEX_CONFIG_DIR="${TEAMCODEX_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/teamcodex}"
 INSTALL_BIN_DIR="${TEAMCODEX_BIN_DIR:-$HOME/.local/bin}"
 umask 077
@@ -23,7 +24,7 @@ if [[ "${1:-}" == '--reset' ]]; then
 fi
 "$ROOT/teamcodex.sh" init
 if [[ -e "$INSTALL_BIN_DIR/teamcodex" && ! -L "$INSTALL_BIN_DIR/teamcodex" ]]; then
-  echo "A file already exists at $INSTALL_BIN_DIR/teamcodex; use $ROOT/teamcodex.sh directly." >&2
+  teamcodex_error INSTALL_PATH_EXISTS "$INSTALL_BIN_DIR/teamcodex" "$ROOT/teamcodex.sh"
 else
   ln -sfn "$ROOT/teamcodex.sh" "$INSTALL_BIN_DIR/teamcodex"
   echo "Installed Docker launcher: $INSTALL_BIN_DIR/teamcodex"

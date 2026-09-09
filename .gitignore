@@ -1,8 +1,37 @@
+# Dependencies and generated reports
 node_modules/
+/artifacts/
+/coverage/
+/.nyc_output/
+/playwright-report/
+/test-results/
+*.tsbuildinfo
+
+# Local credentials and environment; keep documented templates
+.env
+.env.*
+!.env.example
+!.env.sample
+auth.json
+/config.json
+/config.json.*
+/*.backup-*
+
+# Runtime diagnostics and editor/OS files
 *.log
+npm-debug.log*
 .DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+__pycache__/
+*.py[cod]
+
+# Legacy nested installer checkouts
 /teamcodex/
 /teamclaude/
-/.env
-/*.backup-*
-/config.json
+
+# Persistent local usage history
+*.usage.json
+*.usage.json.*

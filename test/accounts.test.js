@@ -1,5 +1,6 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
+import test from 'node:test';
+
 import { AccountManager } from '../src/account-manager.js';
 import { findConfigAccount, resolveAccounts, syncAccountsFromDisk } from '../src/accounts.js';
 
@@ -7,7 +8,7 @@ const key = (name, apiKey = name) => ({ name, type: 'apikey', apiKey, accountId:
 
 test('starting account and rotation schedule are shuffled without changing config indexes', () => {
   const accounts = ['a', 'b', 'c', 'd'].map(name => key(name));
-  const manager = new AccountManager(accounts, 0.98, { randomIndex: () => 0 });
+  const manager = new AccountManager(accounts, 0.98, undefined, { randomIndex: () => 0 });
   assert.deepEqual(manager.accounts.map(a => a.name), ['a', 'b', 'c', 'd']);
   assert.deepEqual(manager.getStatus().rotationOrder, ['b', 'c', 'd', 'a']);
   assert.equal(manager.getActiveAccount().name, 'b');
@@ -27,7 +28,7 @@ test('every permutation and initial account is reachable with uniform shuffle dr
   for (let first = 0; first < 3; first++) {
     for (let second = 0; second < 2; second++) {
       const draws = [first, second];
-      const manager = new AccountManager(['a', 'b', 'c'].map(name => key(name)), 0.98, { randomIndex: () => draws.shift() });
+      const manager = new AccountManager(['a', 'b', 'c'].map(name => key(name)), 0.98, undefined, { randomIndex: () => draws.shift() });
       orders.add(manager.getStatus().rotationOrder.join(','));
       const name = manager.getActiveAccount().name;
       starts.set(name, (starts.get(name) || 0) + 1);
@@ -38,7 +39,7 @@ test('every permutation and initial account is reachable with uniform shuffle dr
 });
 
 test('random schedule survives removal, insertion, and identity replacement', async () => {
-  const manager = new AccountManager(['a', 'b', 'c'].map(name => key(name)), 0.98, { randomIndex: () => 0 });
+  const manager = new AccountManager(['a', 'b', 'c'].map(name => key(name)), 0.98, undefined, { randomIndex: () => 0 });
   const current = manager.getActiveAccount();
   assert.equal(current.name, 'b');
   manager.removeAccount(0);
@@ -59,7 +60,7 @@ test('random schedule survives removal, insertion, and identity replacement', as
 });
 
 test('transient retry rotation and near-quota ties follow the shuffled schedule', () => {
-  const manager = new AccountManager(['a', 'b', 'c'].map(name => key(name)), 0.98, { randomIndex: () => 0 });
+  const manager = new AccountManager(['a', 'b', 'c'].map(name => key(name)), 0.98, undefined, { randomIndex: () => 0 });
   assert.equal(manager.rotateAfter(manager.accounts[1]).name, 'c');
   manager.markAuthFailed(0);
   assert.equal(manager.rotateAfter(manager.accounts[2]).name, 'b');

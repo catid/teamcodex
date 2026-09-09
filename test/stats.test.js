@@ -1,8 +1,9 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, rm, stat, readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdtemp, readdir,readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+
 import { UsageStats } from '../src/stats.js';
 
 const account = { type: 'chatgpt', accountId: 'stable-id', name: 'first', accessToken: 'secret' };

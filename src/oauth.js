@@ -1,10 +1,14 @@
+import { spawn } from 'node:child_process';
+import { createHash,randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import http from 'node:http';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { randomBytes, createHash } from 'node:crypto';
-import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import http from 'node:http';
+
+import { createError, errorMessage } from './errors.js';
+import { browserPrompt } from './tui-login.js';
+import { ESC } from './tui-style.js';
 
 // OAuth config (matches the Codex CLI's registered client)
 const OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
@@ -25,7 +29,7 @@ export function defaultCodexAuthPath() {
  * Decode the payload of a JWT without verifying the signature.
  * Returns null on any parse failure.
  */
-export function parseJwtClaims(token) {
+function parseJwtClaims(token) {
   try {
     const payload = token.split('.')[1];
     return JSON.parse(Buffer.from(payload, 'base64url').toString('utf-8'));
@@ -66,7 +70,7 @@ export async function importCredentials(filePath) {
 
   const tokens = raw.tokens || raw;
   if (!tokens.access_token && !tokens.accessToken) {
-    throw new Error('no access_token found (is this a ChatGPT-mode auth.json?)');
+    throw createError('ACCESS_TOKEN_MISSING');
   }
 
   const creds = {
@@ -115,13 +119,13 @@ export async function refreshAccessToken(refreshToken, endpoint = OAUTH_TOKEN) {
           continue;
         }
         const text = await res.text();
-        throw new Error(`Token refresh failed (${res.status}): ${text}`);
+        throw createError('TOKEN_REFRESH_FAILED', { status: res.status, message: text });
       }
 
       const data = await res.json();
       const accessToken = data.access_token;
       if (!accessToken) {
-        throw new Error('Token refresh response had no access_token');
+        throw createError('TOKEN_REFRESH_INVALID');
       }
       const claims = parseJwtClaims(accessToken);
       return {
@@ -158,7 +162,7 @@ export function isTokenExpiringSoon(expiresAt, thresholdMs = 5 * 60 * 1000) {
  * Perform OAuth login via browser with PKCE flow.
  * Opens the user's browser, waits for the callback, exchanges the code for tokens.
  */
-export async function loginOAuth() {
+export async function loginOAuth({ onAuthorize } = {}) {
   // Generate PKCE
   const codeVerifier = randomBytes(64).toString('base64url');
   const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url');
@@ -167,6 +171,9 @@ export async function loginOAuth() {
   // The Codex OAuth client only accepts http://localhost:1455/auth/callback
   const redirectUri = `http://localhost:${OAUTH_CALLBACK_PORT}/auth/callback`;
   const { codePromise, server } = await startCallbackServer(state);
+  // A callback can fail while an asynchronous authorization hook is still running.
+  // Observe it immediately; the original promise still rejects when awaited below.
+  codePromise.catch(() => {});
 
   const authUrl = new URL(OAUTH_AUTHORIZE);
   authUrl.searchParams.set('response_type', 'code');
@@ -180,13 +187,19 @@ export async function loginOAuth() {
   authUrl.searchParams.set('codex_cli_simplified_flow', 'true');
   authUrl.searchParams.set('originator', 'codex_cli_rs');
 
-  console.log('Opening browser for authentication...');
-  console.log(`If it doesn't open, visit:\n  ${authUrl.toString()}\n`);
-  openBrowser(authUrl.toString());
+  if (process.stdout.isTTY) {
+    process.stdout.write(`${ESC}H${ESC}2J`);
+    console.log(browserPrompt(authUrl.toString(), Math.max(40, Math.min(100, (process.stdout.columns || 80) - 1))).join('\n'));
+  } else {
+    console.log('Opening browser for authentication...');
+    console.log(`If it doesn't open, visit:\n  ${authUrl.toString()}\n`);
+  }
 
   // Wait for either the callback server or manual paste from stdin
   let authResult;
   try {
+    if (onAuthorize) await onAuthorize(authUrl.toString());
+    else openBrowser(authUrl.toString());
     authResult = await raceWithStdinCode(codePromise, state);
   } finally {
     server.close();
@@ -202,8 +215,11 @@ export async function loginOAuth() {
  * device-code flows). Returns a normalized credentials object.
  */
 async function exchangeCodeForTokens(code, codeVerifier, redirectUri) {
+  if (typeof code !== 'string' || !code || typeof codeVerifier !== 'string' ||
+      !/^[A-Za-z0-9._~-]{43,128}$/.test(codeVerifier)) throw createError('OAUTH_PKCE_INVALID');
   const tokenRes = await fetch(OAUTH_TOKEN, {
     method: 'POST',
+    signal: AbortSignal.timeout(30_000),
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
       grant_type: 'authorization_code',
@@ -216,10 +232,11 @@ async function exchangeCodeForTokens(code, codeVerifier, redirectUri) {
 
   if (!tokenRes.ok) {
     const text = await tokenRes.text();
-    throw new Error(`Token exchange failed (${tokenRes.status}): ${text}`);
+    throw createError('TOKEN_EXCHANGE_FAILED', { status: tokenRes.status, message: text });
   }
 
   const tokens = await tokenRes.json();
+  if (typeof tokens.access_token !== 'string' || !tokens.access_token) throw createError('TOKEN_REFRESH_INVALID');
   const creds = {
     accessToken: tokens.access_token,
     refreshToken: tokens.refresh_token,
@@ -247,17 +264,19 @@ export async function deviceCodeLogin({ onPrompt } = {}) {
   const ucRes = await fetch(`${apiBase}/deviceauth/usercode`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(30_000),
     body: JSON.stringify({ client_id: OAUTH_CLIENT_ID }),
   });
   if (!ucRes.ok) {
     if (ucRes.status === 404) {
-      throw new Error('device code login is not available (404 from auth server)');
+      throw createError('DEVICE_AUTH_UNAVAILABLE');
     }
-    throw new Error(`device code request failed (${ucRes.status})`);
+    throw createError('DEVICE_CODE_FAILED', { status: ucRes.status });
   }
   const uc = await ucRes.json();
   const deviceAuthId = uc.device_auth_id;
   const userCode = uc.user_code || uc.usercode;
+  if (typeof deviceAuthId !== 'string' || !deviceAuthId || typeof userCode !== 'string' || !userCode) throw createError('DEVICE_RESPONSE_INVALID');
   const interval = Math.max(5, parseInt(uc.interval, 10) || 5);
   const verificationUrl = `${OAUTH_ISSUER}/codex/device`;
 
@@ -271,18 +290,19 @@ export async function deviceCodeLogin({ onPrompt } = {}) {
     const r = await fetch(tokenUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(Math.max(1, Math.min(30_000, deadline - Date.now()))),
       body: JSON.stringify({ device_auth_id: deviceAuthId, user_code: userCode }),
     });
     if (r.ok) { codeResp = await r.json(); break; }
     if (r.status === 403 || r.status === 404) {
       await r.body?.cancel();
-      if (Date.now() >= deadline) throw new Error('device auth timed out after 15 minutes');
+      if (Date.now() >= deadline) throw createError('DEVICE_AUTH_TIMEOUT');
       const wait = Math.min(interval * 1000, deadline - Date.now());
       await new Promise(resolve => setTimeout(resolve, wait));
       continue;
     }
     const text = await r.text().catch(() => '');
-    throw new Error(`device auth failed (${r.status})${text ? ': ' + text : ''}`);
+    throw createError('DEVICE_AUTH_FAILED', { status: r.status, message: text ? `: ${  text}` : '' });
   }
 
   // 3. Exchange the issued code (with the server-provided verifier) for tokens
@@ -333,9 +353,9 @@ export function parseManualAuthInput(input, expectedState) {
   const params = url ? url.searchParams :
     trimmed.includes('=') && trimmed.includes('&') ? new URLSearchParams(trimmed) : null;
   if (params) {
-    if (expectedState && params.get('state') !== expectedState) throw new Error('OAuth state mismatch');
-    if (params.get('error')) throw new Error(`OAuth error: ${params.get('error')}`);
-    if (!params.get('code')) throw new Error('Callback URL is missing an authorization code');
+    if (expectedState && params.get('state') !== expectedState) throw createError('OAUTH_STATE_MISMATCH');
+    if (params.get('error')) throw createError('OAUTH_PROVIDER_ERROR', { error: params.get('error') });
+    if (!params.get('code')) throw createError('OAUTH_CODE_MISSING');
     return { code: params.get('code') };
   }
   return { code: trimmed };
@@ -354,17 +374,17 @@ function startCallbackServer(expectedState) {
         const error = url.searchParams.get('error');
         const state = url.searchParams.get('state');
 
-        if (error) {
+        if (expectedState && state !== expectedState) {
           res.writeHead(200, { 'Content-Type': 'text/html' });
-          res.end('<html><body><h2>Authentication failed</h2><p>You can close this tab.</p></body></html>');
-          rejectCode(new Error(`OAuth error: ${error} - ${url.searchParams.get('error_description') || ''}`));
+          res.end(errorMessage('OAUTH_STATE_REJECTED_PAGE'));
+          rejectCode(createError('OAUTH_STATE_MISMATCH'));
           return;
         }
 
-        if (expectedState && state !== expectedState) {
+        if (error) {
           res.writeHead(200, { 'Content-Type': 'text/html' });
-          res.end('<html><body><h2>Authentication failed</h2><p>State mismatch. You can close this tab.</p></body></html>');
-          rejectCode(new Error('OAuth state mismatch'));
+          res.end(errorMessage('OAUTH_CALLBACK_REJECTED_PAGE'));
+          rejectCode(createError('OAUTH_CALLBACK_ERROR', { error: error, description: url.searchParams.get('error_description') || '' }));
           return;
         }
 
@@ -377,18 +397,15 @@ function startCallbackServer(expectedState) {
       }
 
       res.writeHead(404);
-      res.end('Not found');
+      res.end(errorMessage('OAUTH_NOT_FOUND'));
     });
 
-    server.listen(OAUTH_CALLBACK_PORT, () => {
+    server.listen(OAUTH_CALLBACK_PORT, '127.0.0.1', () => {
       resolve({ codePromise, server });
     });
     server.on('error', err => {
       if (err.code === 'EADDRINUSE') {
-        reject(new Error(
-          `Port ${OAUTH_CALLBACK_PORT} is in use (the Codex OAuth client requires it). ` +
-          'Close any running "codex login" and try again.'
-        ));
+        reject(createError('OAUTH_PORT_BUSY', { port: OAUTH_CALLBACK_PORT }));
       } else {
         reject(err);
       }
@@ -396,7 +413,7 @@ function startCallbackServer(expectedState) {
 
     // Timeout after 5 minutes (unref so it doesn't keep the process alive)
     const timer = setTimeout(() => {
-      rejectCode(new Error('Login timed out after 5 minutes'));
+      rejectCode(createError('OAUTH_LOGIN_TIMEOUT'));
       server.close();
     }, 300_000);
     timer.unref();

@@ -1,9 +1,10 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import { once } from 'node:events';
-import { createProxyServer } from '../src/server.js';
+import http from 'node:http';
+import test from 'node:test';
+
 import { AccountManager } from '../src/account-manager.js';
+import { createProxyServer } from '../src/server.js';
 import { UsageStats } from '../src/stats.js';
 
 const key = name => ({ name, type: 'apikey', apiKey: name });
@@ -17,7 +18,7 @@ async function listen(t, server) {
 
 async function setup(t, handler, accounts = [key('first'), key('second')], config = {}, hooks = {}) {
   const upstream = await listen(t, http.createServer(handler));
-  const manager = new AccountManager(accounts, 0.98, { randomIndex: size => size - 1 });
+  const manager = new AccountManager(accounts, 0.98, undefined, { randomIndex: size => size - 1 });
   manager.stats = new UsageStats();
   const url = await listen(t, createProxyServer(manager, { upstream, apiUpstream: upstream, proxy: { apiKey: 'proxy-secret' }, ...config }, hooks));
   return { manager, url };
@@ -127,7 +128,12 @@ test('Docker authentication accepts bearer keys and rejects missing or wrong key
   for (const authorization of ['', 'Bearer wrong', 'Bearer proxy-secret']) {
     const res = await fetch(`${url}/teamcodex/status`, { headers: { authorization } });
     assert.equal(res.status, authorization.endsWith('proxy-secret') ? 200 : 401);
-    await res.text();
+    const body = await res.json();
+    if (res.status === 401) {
+      assert.equal(body.error.code, 'INVALID_PROXY_KEY');
+      assert.equal(body.error.opcode, 3001);
+      assert.equal(body.error.type, 'authentication_error');
+    }
   }
 });
 
@@ -311,4 +317,135 @@ test('credentials rejected again after a refresh rotate instead of refreshing in
   assert.equal(await (await fetch(`${url}/responses`)).text(), 'hello');
   assert.equal(refreshed, 1);
   assert.deepEqual(seen, ['Bearer old', 'Bearer still-rejected', 'Bearer good']);
+});
+
+test('admission limits reject excess traffic and release slots after completion', async t => {
+  let release;
+  const { url } = await setup(t, (_req, res) => {
+    release = () => res.end('{"ok":true}');
+  }, [key('first')], { maxConcurrentRequests: 1 });
+  const first = fetch(`${url}/responses`);
+  while (!release) await new Promise(resolve => setTimeout(resolve, 5));
+  const excess = await fetch(`${url}/responses`);
+  assert.equal(excess.status, 503);
+  assert.equal((await excess.json()).error.code, 'PROXY_OVERLOADED');
+  assert.equal(excess.headers.get('retry-after'), '1');
+  release();
+  await (await first).text();
+  release = null;
+  const next = fetch(`${url}/responses`);
+  while (!release) await new Promise(resolve => setTimeout(resolve, 5));
+  release();
+  assert.equal((await next).status, 200);
+});
+
+test('pool selection isolates accounts and strips the routing header upstream', async t => {
+  let routed;
+  const { manager, url } = await setup(t, (req, res) => {
+    routed = req.headers;
+    res.end('{}');
+  });
+  manager.routing = { defaultPool: 'main', pools: { main: { accounts: ['first'] }, other: { accounts: ['second'] } } };
+  const response = await fetch(`${url}/responses`, { headers: { 'x-teamcodex-pool': 'other' } });
+  await response.text();
+  assert.equal(routed.authorization, 'Bearer second');
+  assert.equal(routed['x-teamcodex-pool'], undefined);
+  const invalid = await fetch(`${url}/responses`, { headers: { 'x-teamcodex-pool': 'missing' } });
+  assert.equal(invalid.status, 400);
+});
+
+test('a saturated pool does not block another pool or status requests', async t => {
+  let release;
+  const { manager, url } = await setup(t, (req, res) => {
+    if (req.headers.authorization === 'Bearer first') release = () => res.end('{}');
+    else res.end('{}');
+  }, [key('first'), key('second')], { maxConcurrentRequests: 2 });
+  manager.routing = { defaultPool: 'main', pools: {
+    main: { accounts: ['first'], maxConcurrentRequests: 1 },
+    other: { accounts: ['second'], maxConcurrentRequests: 1 },
+  } };
+  const pending = fetch(`${url}/responses`);
+  while (!release) await new Promise(resolve => setTimeout(resolve, 5));
+  try {
+    const blocked = await fetch(`${url}/responses`);
+    assert.equal(blocked.status, 503);
+    await blocked.text();
+    const other = await fetch(`${url}/responses`, { headers: { 'x-teamcodex-pool': 'other' } });
+    assert.equal(other.status, 200);
+    await other.text();
+    const status = await fetch(`${url}/teamcodex/status`);
+    assert.equal(status.status, 200);
+    await status.text();
+  } finally {
+    release();
+    await (await pending).text();
+  }
+});
+
+test('adaptive routing avoids occupied accounts and releases attempts after completion', async t => {
+  let finish;
+  let began;
+  const started = new Promise(resolve => { began = resolve; });
+  const { manager, url } = await setup(t, (req, res) => {
+    if (req.headers.authorization === 'Bearer first') { finish = () => res.end('{}'); began(); }
+    else res.end('{}');
+  });
+  manager.routing = { defaultPool: 'main', pools: { main: { accounts: ['first', 'second'], strategy: 'adaptive' } } };
+  const pending = fetch(`${url}/responses`);
+  await started;
+  assert.equal(manager.getStatus().accounts[0].adaptive.inFlight, 1);
+  const second = await fetch(`${url}/responses`);
+  assert.equal(second.status, 200);
+  await second.text();
+  finish();
+  await (await pending).text();
+  assert.ok(manager.getStatus().accounts.every(a => a.adaptive.inFlight === 0));
+  assert.ok(manager.getStatus().accounts.every(a => a.adaptive.samples === 1));
+});
+
+test('adaptive retries record failed attempts and release both accounts', async t => {
+  const { manager, url } = await setup(t, (req, res) => {
+    res.writeHead(req.headers.authorization === 'Bearer first' ? 503 : 200);
+    res.end('{}');
+  });
+  manager.routing = { defaultPool: 'main', pools: { main: { accounts: ['first', 'second'], strategy: 'adaptive' } } };
+  assert.equal((await fetch(`${url}/responses`)).status, 200);
+  const status = manager.getStatus().accounts;
+  assert.ok(status.every(a => a.adaptive.inFlight === 0));
+  assert.ok(status[0].adaptive.failureRate > 0);
+  assert.equal(status[1].adaptive.failureRate, 0);
+});
+
+test('adaptive client cancellation releases load without a failure sample', async t => {
+  let began;
+  const started = new Promise(resolve => { began = resolve; });
+  const { manager, url } = await setup(t, () => { began(); });
+  const controller = new AbortController();
+  const pending = fetch(`${url}/responses`, { signal: controller.signal }).catch(() => {});
+  await started;
+  controller.abort();
+  await pending;
+  for (let i = 0; i < 100 && manager.getStatus().accounts[0].adaptive.inFlight; i++) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  const metric = manager.getStatus().accounts[0].adaptive;
+  assert.equal(metric.inFlight, 0);
+  assert.equal(metric.samples, 0);
+});
+
+test('adaptive pool routing keeps persistent retry accounting and pool isolation', async t => {
+  const { manager, url } = await setup(t, (req, res) => {
+    res.writeHead(req.headers.authorization === 'Bearer first' ? 503 : 200);
+    res.end('{"usage":{"input_tokens":4,"output_tokens":2}}');
+  }, [key('first'), key('second'), key('outside')]);
+  manager.routing = { defaultPool: 'main', pools: { main: { accounts: ['first', 'second'], strategy: 'adaptive' } } };
+  const response = await fetch(`${url}/responses`);
+  await response.text();
+  assert.equal(response.status, 200);
+  const status = manager.getStatus();
+  assert.equal(status.statistics.totals.requests, 1);
+  assert.equal(status.statistics.totals.attempts, 2);
+  assert.equal(status.statistics.totals.retries, 1);
+  assert.equal(status.accounts[2].adaptive.samples, 0);
+  assert.ok(status.accounts.every(account => account.adaptive.inFlight === 0));
 });

@@ -1,11 +1,12 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
-import { once } from 'node:events';
 import { execFile } from 'node:child_process';
+import { once } from 'node:events';
+import http from 'node:http';
+import test from 'node:test';
 import { promisify } from 'node:util';
-import { renderStatus, displayWidth } from '../src/status.js';
+
 import { UsageStats } from '../src/stats.js';
+import { displayWidth,renderStatus } from '../src/status.js';
 
 const now = Date.parse('2026-09-09T12:00:00Z');
 function fixture() {
@@ -33,6 +34,7 @@ test('dashboard reports aggregate totals without adding cached input twice', () 
   assert.match(output, /Earned reset credits 0/);
   assert.match(output, /STALE/);
   assert.match(output, /2 requests in flight/);
+  // eslint-disable-next-line no-control-regex -- Strip or test terminal control sequences.
   assert.doesNotMatch(output, /\x1b/);
 });
 
@@ -65,12 +67,13 @@ test('zero traffic shows an empty chart, and persistence errors are prominent', 
 
 test('wide, compact and narrow displays stay within terminal width and strip injected controls', () => {
   const data = fixture();
-  data.accounts[0].name = 'Long'.repeat(25) + '\x1b[31m\n\t测试\u202e';
+  data.accounts[0].name = `${'Long'.repeat(25)  }\x1b[31m\n\t测试\u202e`;
   data.currentAccount = data.accounts[0].name;
   data.rotationOrder = [data.accounts[0].name];
   for (const columns of [30, 40, 80, 85, 110, 140]) for (const compact of [true, false]) {
     const output = renderStatus(data, { columns, compact, now });
     assert.ok(output.split('\n').every(line => displayWidth(line) <= columns), `width ${columns}, compact ${compact}`);
+  // eslint-disable-next-line no-control-regex -- Strip or test terminal control sequences.
     assert.doesNotMatch(output, /[\x1b\t\u202e]/);
   }
   const compact = renderStatus(fixture(), { compact: true, now });

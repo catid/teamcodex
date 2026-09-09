@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { atomicConfigUpdate } from './config.js';
-import { findConfigAccount } from './accounts.js';
-import { importCredentials } from './oauth.js';
-import { TRANSIENT_STATUSES, isTransientError, retryDelay } from './retry.js';
 
-// ChatGPT contract inspected in c0ldfront/bifrost (fa8ee27),
-// deploy/oauth/pi-account.mjs. Implemented here independently for TeamCodex.
+import { findConfigAccount } from './accounts.js';
+import { atomicConfigUpdate } from './config.js';
+import { createError, errorMessage } from './errors.js';
+import { importCredentials } from './oauth.js';
+import { isTransientError, retryDelay,TRANSIENT_STATUSES } from './retry.js';
+
+// Contract: openai/codex codex-rs/backend-client/src/client/rate_limit_resets.rs
+// and its tests; reviewed revision recorded in docs/authentication.md.
 const USAGE_PATH = '/backend-api/wham/usage';
 const RESET_PATH = '/backend-api/wham/rate-limit-reset-credits/consume';
 const PENDING_RETRY_MS = 60_000;
@@ -13,7 +15,7 @@ const COOLDOWN_MS = 60 * 60 * 1000;
 const MAX_SNAPSHOT_AGE_MS = 10 * 60 * 1000;
 const MAX_BODY_BYTES = 1024 * 1024;
 
-export function autoResetPolicy(config) {
+function autoResetPolicy(config) {
   return {
     enabled: config.autoReset?.enabled ?? true,
     threshold: config.autoReset?.threshold ?? 0.98,
@@ -42,10 +44,11 @@ export function normalizeUsage(payload, now = Date.now()) {
   const windows = [primary, secondary, ...(Array.isArray(payload?.additional_rate_limits)
     ? payload.additional_rate_limits.flatMap(limit => [limit?.rate_limit?.primary_window, limit?.rate_limit?.secondary_window]) : [])];
   const values = windows.map(window => percentage(window?.used_percent)).filter(value => value !== null);
-  if (!values.length || payload.available === false) throw new Error('invalid_usage_response');
+  if (!values.length || payload.available === false) throw createError('USAGE_INVALID');
   const credits = payload?.rate_limit_reset_credits?.available_count;
   return {
     fetchedAt: now,
+    usageDenied: payload?.rate_limit?.allowed === false || payload?.rate_limit?.limit_reached === true,
     utilization: Math.max(...values),
     resetCreditsAvailable: Number.isSafeInteger(credits) && credits >= 0 ? credits : null,
     additionalQuota: (Array.isArray(payload?.additional_rate_limits) ? payload.additional_rate_limits : []).flatMap((limit, index) =>
@@ -69,22 +72,22 @@ export function normalizeUsage(payload, now = Date.now()) {
 async function boundedJSON(response) {
   if (!response.ok) {
     await response.body?.cancel();
-    throw new Error(`http_${response.status}`);
+    throw createError('USAGE_HTTP_ERROR', { status: response.status });
   }
   const chunks = [];
   let size = 0;
   for await (const chunk of response.body || []) {
     size += chunk.byteLength;
-    if (size > MAX_BODY_BYTES) throw new Error('response_too_large');
+    if (size > MAX_BODY_BYTES) throw createError('USAGE_RESPONSE_TOO_LARGE');
     chunks.push(chunk);
   }
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
-  catch { throw new Error('invalid_response'); }
+  catch { throw createError('USAGE_RESPONSE_INVALID'); }
 }
 
 function errorCode(err) {
-  return /^(http_\d{3}|invalid_usage_response|response_too_large|invalid_response)$/.test(err?.message)
-    ? err.message : 'provider_unavailable';
+  return ['USAGE_HTTP_ERROR', 'USAGE_INVALID', 'USAGE_RESPONSE_TOO_LARGE', 'USAGE_RESPONSE_INVALID'].includes(err?.code)
+    ? err.message : errorMessage('USAGE_PROVIDER_UNAVAILABLE');
 }
 
 export class UsageResetMonitor {
@@ -95,6 +98,8 @@ export class UsageResetMonitor {
     this.updateConfig = updateConfig;
     this.now = now;
     this.wait = wait;
+    // Snapshot provenance is internal: callers cannot label pooled metrics as account usage.
+    this.snapshots = new WeakMap();
     this.lastRecoveryAt = -Infinity;
     this.pendingTimer = null;
     this.controller = new AbortController();
@@ -105,7 +110,7 @@ export class UsageResetMonitor {
 
   start() {
     if (this.timer) return;
-    const check = () => this.check().catch(err => console.error(`[TeamCodex] Usage monitor failed: ${err.message}`));
+    const check = () => this.check().catch(err => console.error(errorMessage('USAGE_MONITOR_FAILED', { message: err.message })));
     this.timer = setInterval(check, autoResetPolicy(this.config).pollIntervalSeconds * 1000);
     this.timer.unref();
     void check();
@@ -150,7 +155,7 @@ export class UsageResetMonitor {
   }
 
   async checkAccount(account) {
-    if (account.type !== 'chatgpt' || account.status === 'error') return;
+    if (account.type !== 'chatgpt' || account.enabled === false || account.status === 'error') return;
     await this.manager.ensureTokenFresh(account);
     if (!this.manager.accounts.includes(account) || account.status === 'error') return;
     let snapshot = null;
@@ -175,7 +180,7 @@ export class UsageResetMonitor {
     for (let attempt = 0; ; attempt++) {
       this.controller.signal.throwIfAborted();
       if (!this.manager.accounts.includes(account) || account.accountId !== accountId || account.credential !== credential) {
-        throw new Error('account_changed');
+        throw createError('ACCOUNT_CHANGED');
       }
       try {
         const response = await this.fetch(`${(this.config.upstream || 'https://chatgpt.com').replace(/\/+$/, '')}${path}`, {
@@ -206,9 +211,11 @@ export class UsageResetMonitor {
     const credential = account.credential;
     const payload = await this.request(account, USAGE_PATH);
     if (!this.manager.accounts.includes(account) || account.accountId !== accountId || account.credential !== credential) {
-      throw new Error('account_changed');
+      throw createError('ACCOUNT_CHANGED');
     }
-    return normalizeUsage(payload, this.now());
+    const snapshot = normalizeUsage(payload, this.now());
+    this.snapshots.set(snapshot, { account, accountId, credential });
+    return snapshot;
   }
 
   applyUsage(account, snapshot, resetConfirmed = false) {
@@ -224,7 +231,7 @@ export class UsageResetMonitor {
       checkError: null,
     };
     // A reset response alone is insufficient: the new usage must show capacity.
-    if ((resetConfirmed || snapshot.utilization < previousUsage) && snapshot.utilization < 1 && account.status === 'throttled') {
+    if (!snapshot.usageDenied && (resetConfirmed || snapshot.utilization < previousUsage) && snapshot.utilization < 1 && account.status === 'throttled') {
       account.status = 'active';
       account.rateLimitedUntil = null;
     }
@@ -233,17 +240,25 @@ export class UsageResetMonitor {
   async reserve(account, snapshot) {
     let reservation = null;
     const identity = { accountId: account.accountId, name: account.name };
+    const credential = account.credential;
     const stateKey = `chatgpt:${identity.accountId}`;
     await this.updateConfig(async config => {
       const idx = findConfigAccount(config, identity);
       const entry = config.accounts[idx];
-      if (!entry || entry.type !== 'chatgpt') return;
+      if (!entry || entry.type !== 'chatgpt' || entry.enabled === false || account.enabled === false) return;
       let accountId = entry.accountId;
-      if (!accountId && entry.importFrom && !entry.accessToken) {
-        try { accountId = (await importCredentials(entry.importFrom === '~/.codex/auth.json' ? undefined : entry.importFrom)).accountId; }
-        catch { return; }
+      let diskCredential = entry.accessToken;
+      if (entry.importFrom && !entry.accessToken) {
+        try {
+          const imported = await importCredentials(entry.importFrom === '~/.codex/auth.json' ? undefined : entry.importFrom);
+          accountId = imported.accountId;
+          diskCredential = imported.accessToken;
+        } catch { return; }
       }
-      if (accountId !== identity.accountId) return;
+      // Recheck both disk and live identity after any awaited import/lock acquisition.
+      if (accountId !== identity.accountId || diskCredential !== credential ||
+          !this.manager.accounts.includes(account) || account.enabled === false ||
+          account.accountId !== identity.accountId || account.credential !== credential) return;
       const policy = autoResetPolicy(config);
       this.manager.autoReset = policy;
       const state = config.usageResetState?.[stateKey] || {};
@@ -253,6 +268,9 @@ export class UsageResetMonitor {
       const previous = state.lastAttemptAt ? Date.parse(state.lastAttemptAt) : null;
       if (previous !== null && (!Number.isFinite(previous) || now - previous < (state.pendingRequestId ? PENDING_RETRY_MS : COOLDOWN_MS))) return;
       if (!state.pendingRequestId) {
+        const source = snapshot && this.snapshots.get(snapshot);
+        if (!source || source.account !== account || source.accountId !== account.accountId ||
+            source.credential !== account.credential) return;
         const started = Date.parse(state.lastStartedAt || state.lastAttemptAt || '');
         if (Number.isFinite(started) && now - started < COOLDOWN_MS) return;
         if (!snapshot || now < snapshot.fetchedAt || now - snapshot.fetchedAt > MAX_SNAPSHOT_AGE_MS ||
@@ -290,7 +308,7 @@ export class UsageResetMonitor {
   async redeem(account, reservation) {
     const accountId = account.accountId;
     const stateKey = `chatgpt:${accountId}`;
-    let result = 'provider_unavailable';
+    let result = errorMessage('USAGE_PROVIDER_UNAVAILABLE');
     let settled = false;
     try {
       const response = await this.request(account, RESET_PATH, { redeem_request_id: reservation.pendingRequestId });
@@ -300,16 +318,16 @@ export class UsageResetMonitor {
         if (result === 'no_credit' && account.accountId === accountId) account.usageReset.availableCredits = 0;
       } else if (['reset', 'already_redeemed'].includes(response?.code)) {
         try {
-          if (account.accountId !== accountId || !this.manager.accounts.includes(account)) throw new Error('account_changed');
+          if (account.accountId !== accountId || !this.manager.accounts.includes(account)) throw createError('ACCOUNT_CHANGED');
           const snapshot = await this.readUsage(account);
           this.applyUsage(account, snapshot, true);
           result = 'completed';
           settled = true;
         } catch {
-          result = 'refresh_failed';
+          result = errorMessage('USAGE_REFRESH_FAILED');
         }
       } else {
-        result = 'unknown_outcome';
+        result = errorMessage('USAGE_UNKNOWN_OUTCOME');
       }
     } catch (err) {
       result = errorCode(err);
@@ -325,7 +343,7 @@ export class UsageResetMonitor {
     if (!settled && this.timer && !this.pendingTimer && !this.controller.signal.aborted) {
       this.pendingTimer = setTimeout(() => {
         this.pendingTimer = null;
-        void this.check().catch(err => console.error(`[TeamCodex] Pending reset check failed: ${err.message}`));
+        void this.check().catch(err => console.error(errorMessage('USAGE_PENDING_CHECK_FAILED', { message: err.message })));
       }, PENDING_RETRY_MS);
       this.pendingTimer.unref();
     }

@@ -302,6 +302,9 @@ Generated config looks like this; the real key is randomly generated:
 
 See [config.example.json](config.example.json) for an import-based account example. Run the installer or `init` to generate a unique key instead of copying the example key into service.
 
+For weighted routing, per-account thresholds, named pools, and concurrency limits,
+see [routing configuration](docs/routing.md). Follow-up work is tracked in [ROADMAP.md](ROADMAP.md).
+
 | JSON field | Meaning |
 | --- | --- |
 | `proxy.host`, `proxy.port` | Native listening address; Docker overrides these to `0.0.0.0:1456` inside the container |
@@ -366,7 +369,7 @@ Use TeamCodex to launch sessions using its accounts. Independently running a nat
 
 ## Native development and TUI
 
-The Docker launcher is the normal installation. For development, Node.js 22+ can run the source directly on either platform:
+The Docker launcher is the normal installation. For development, use Node.js 22.13+ on the Node 22 line, or Node.js 24+:
 
 ```bash
 node src/index.js init
@@ -385,16 +388,45 @@ Full request/response logging is available with native `serve --log-to DIR`. To 
 ## Verification
 
 ```bash
-npm test
+npm ci
+npm run check
 bash -n teamcodex.sh install.sh install-team-repos.sh run-team-servers.sh
 
 docker build -f test/Dockerfile.ubuntu -t teamcodex-test:ubuntu .
 docker run --rm teamcodex-test:ubuntu
 ```
 
-Tests cover concurrent config writes, reset backups and permissions, account reload/removal during active requests, token-refresh races, randomized starting accounts and retry order, 401/429 rotation, SSE framing, OAuth state checks, automatic usage-reset thresholds and credit availability, persisted cooldowns and idempotent retries, cross-provider session selection, and literal argument handling through the native and Docker launchers. They use fake credentials and local upstream servers. Run the session-selection tests with `python3 -m unittest discover -s test -p 'test_*.py'`. CI runs Node.js 22 and 24 on macOS and Ubuntu, plus the Docker/Ubuntu test image.
+`npm run check` checks generated error tables, then runs ESLint, Knip, and the test suite. Use `npm run lint`,
+`npm run knip`, or `npm test` individually during development. These tools are
+development dependencies; the proxy has no runtime dependencies.
 
+Application errors are centralized in [the error code table](docs/errors.md).
+Proxy-generated JSON errors include stable `code` and numeric `opcode` fields.
+
+Run `npm run test:e2e` for the isolated Docker/mock-provider integration suite.
+See [Docker E2E coverage and requirements](docs/e2e.md).
+Run `npm run test:tui` for interactive mock TUI screenshots; the review gallery is
+written to `artifacts/tui/index.html` (Chromium installation is described in the E2E guide).
+
+In the native TUI, press `u` for pool and account usage since proxy startup;
+use arrows or `j`/`k` to scroll and `u`/Escape to return. Pool totals aggregate
+member accounts; shared accounts appear in each pool.
+
+Account indicators distinguish `active`, `disabled` (configured off), `refreshing`
+(token refresh in progress), `throttled`, `exhausted`, and `auth error`. Disabling an
+account takes precedence over other display states; the status API exposes its
+original state as `underlyingStatus` for diagnosis.
+
+In the TUI add menu (`a`), choose `k` for an API key, `o` for browser OAuth,
+`d` for device authorization, or `i` to import Codex credentials. OAuth temporarily
+hands the terminal to the login flow and restores the dashboard afterward.
+Browser OAuth uses S256 PKCE; device authorization uses the provider-issued verifier
+at code exchange. API keys do not use PKCE. Docker login uses device authorization.
+
+Tests cover concurrent config writes, reset backups and permissions, account reload/removal during active requests, token-refresh races, 401/429 rotation, SSE framing, OAuth state checks, automatic usage-reset thresholds and credit availability, persisted cooldowns and idempotent retries, and literal argument handling through the native and Docker launchers. They use fake credentials and local upstream servers. CI runs Node.js 22 and 24 on macOS and Ubuntu, plus the Docker/Ubuntu test image.
 Statistics tests cover retry accounting, duplicate stream usage, in-flight disconnect cleanup, restart persistence, UTC bucket retention, damaged history, write recovery, and terminal layout at narrow and wide widths.
+
+Run Python helper tests with `python3 -m unittest discover -s test -p 'test_*.py'`.
 
 ## Troubleshooting
 
@@ -415,3 +447,6 @@ Statistics tests cover retry accounting, duplicate stream usage, in-flight disco
 ## License
 
 MIT
+
+Adaptive account routing is available per pool with `"strategy": "adaptive"`; see
+[configuration and feedback semantics](docs/routing.md#adaptive-routing).

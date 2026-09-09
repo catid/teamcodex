@@ -7,6 +7,7 @@ COPY package.json ./
 COPY src/ ./src/
 COPY test/ ./test/
 COPY teamcodex.sh ./
+COPY scripts/errors.sh ./scripts/errors.sh
 COPY scripts/resume.py scripts/update.py ./scripts/
 RUN chmod -R a+rX /workspace
 USER ubuntu

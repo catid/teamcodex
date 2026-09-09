@@ -1,20 +1,24 @@
 #!/usr/bin/env node
-
 import { spawnSync } from 'node:child_process';
-import { createInterface } from 'node:readline';
-import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
+import { mkdir, readFile, rename,writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { loadOrCreateConfig, loadConfig, atomicConfigUpdate, getConfigPath, resetConfig } from './config.js';
+import { createInterface } from 'node:readline';
+
 import { AccountManager } from './account-manager.js';
-import { createProxyServer } from './server.js';
-import {
-  importCredentials, loginOAuth, deviceCodeLogin, accountInfoFromTokens,
-  defaultCodexAuthPath,
-} from './oauth.js';
-import { TUI } from './tui.js';
 import { findConfigAccount, resolveAccounts, syncAccountsFromDisk } from './accounts.js';
-import { UsageResetMonitor } from './usage-reset.js';
+import { atomicConfigUpdate, getConfigPath, loadConfig, loadOrCreateConfig, resetConfig } from './config.js';
+import { createError, errorMessage } from './errors.js';
+import {
+accountInfoFromTokens,
+  defaultCodexAuthPath,
+deviceCodeLogin,   importCredentials, loginOAuth, } from './oauth.js';
+import { preserveAccountRouting } from './routing.js';
+import { createProxyServer } from './server.js';
 import { UsageStats } from './stats.js';
+import { TUI } from './tui.js';
+import { devicePrompt } from './tui-login.js';
+import { ESC } from './tui-style.js';
+import { UsageResetMonitor } from './usage-reset.js';
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -36,7 +40,7 @@ switch (command) {
         const creds = await importCredentials();
         await upsertChatGPTAccount(config, null, creds, 'import');
       } catch (err) {
-        console.log(`No credentials imported: ${err.message}`);
+        console.log(errorMessage('CREDENTIAL_IMPORT_SKIPPED', { message: err.message }));
         console.log('Add an account with: teamcodex login --device-auth');
       }
     }
@@ -88,7 +92,7 @@ switch (command) {
   default:
     // No command or unknown command → start server
     if (command && !command.startsWith('-')) {
-      console.error(`Unknown command: ${command}\n`);
+      console.error(errorMessage('UNKNOWN_COMMAND', { command }));
       showHelp();
       process.exit(1);
     }
@@ -106,7 +110,7 @@ async function serveCommand() {
   if (logTo) config.logDir = logTo;
 
   if (config.accounts.length === 0) {
-    console.error('No accounts configured.\n');
+    console.error(errorMessage('NO_ACCOUNTS'));
     console.error('Add an account first:');
     console.error('  teamcodex import            Import from Codex CLI');
     console.error('  teamcodex login             OAuth login via browser');
@@ -116,13 +120,13 @@ async function serveCommand() {
 
   const accounts = await resolveAccounts(config);
   if (accounts.length === 0) {
-    console.error('No valid accounts after initialization');
+    console.error(errorMessage('NO_VALID_ACCOUNTS'));
     process.exit(1);
   }
 
   config.accounts = accounts;
   const threshold = config.switchThreshold ?? 0.98;
-  const accountManager = new AccountManager(accounts, threshold);
+  const accountManager = new AccountManager(accounts, threshold, config.routing);
   const statistics = await new UsageStats(`${getConfigPath()}.usage.json`).load();
   accountManager.stats = statistics;
 
@@ -170,11 +174,18 @@ async function serveCommand() {
       saveConfig: ({ upsert, remove }) => atomicConfigUpdate(diskConfig => {
         if (remove) {
           const idx = findConfigAccount(diskConfig, remove);
-          if (idx >= 0) diskConfig.accounts.splice(idx, 1);
+          if (idx >= 0) {
+            const name = diskConfig.accounts[idx].name;
+            diskConfig.accounts.splice(idx, 1);
+            for (const pool of Object.values(diskConfig.routing?.pools ?? {})) pool.accounts = pool.accounts.filter(member => member !== name);
+          }
         }
         if (upsert) {
           const idx = findConfigAccount(diskConfig, upsert);
-          if (idx >= 0) diskConfig.accounts[idx] = { ...diskConfig.accounts[idx], ...upsert };
+          if (idx >= 0) {
+            preserveAccountRouting(diskConfig, diskConfig.accounts[idx], upsert);
+            diskConfig.accounts[idx] = { ...diskConfig.accounts[idx], ...upsert };
+          }
           else diskConfig.accounts.push(upsert);
         }
       }),
@@ -193,7 +204,7 @@ async function serveCommand() {
 
   server.on('error', err => {
     if (tui?.running) tui.stop();
-    console.error(`Cannot start proxy: ${err.message}`);
+    console.error(errorMessage('PROXY_START_FAILED', { message: err.message }));
     process.exitCode = 1;
   });
   server.listen(port, process.env.TEAMCODEX_LISTEN_HOST || config.proxy.host || '127.0.0.1', () => {
@@ -213,7 +224,7 @@ async function serveCommand() {
       console.log(`  Upstream:   ${config.upstream || 'https://chatgpt.com'}`);
       console.log('');
       accounts.forEach((a, i) => {
-        console.log(`  [${i + 1}] ${a.name} (${a.type}${a.planType ? ', ' + a.planType : ''})`);
+        console.log(`  [${i + 1}] ${a.name} (${a.type}${a.planType ? `, ${  a.planType}` : ''})`);
       });
       console.log('');
       console.log('  Run Codex through proxy:  teamcodex run');
@@ -257,7 +268,7 @@ async function importCommand() {
       const data = raw.tokens || raw;
       const accessToken = data.access_token || data.accessToken;
       if (!accessToken) {
-        console.error('JSON must contain "access_token" (directly or under "tokens")');
+        console.error(errorMessage('IMPORT_JSON_TOKEN_MISSING'));
         process.exit(1);
       }
       creds = {
@@ -270,7 +281,7 @@ async function importCommand() {
       creds.accountId = info.accountId;
       creds.expiresAt = info.expiresAt;
     } catch (err) {
-      console.error(`Failed to parse --json: ${err.message}`);
+      console.error(errorMessage('IMPORT_JSON_INVALID', { message: err.message }));
       process.exit(1);
     }
   } else {
@@ -278,7 +289,7 @@ async function importCommand() {
     try {
       creds = await importCredentials(fromPath);
     } catch (err) {
-      console.error(`Failed to import from ${fromPath || defaultCodexAuthPath()}: ${err.message}`);
+      console.error(errorMessage('IMPORT_FILE_FAILED', { path: fromPath || defaultCodexAuthPath(), message: err.message }));
       process.exit(1);
     }
   }
@@ -322,20 +333,16 @@ async function loginDeviceCommand() {
   try {
     creds = await deviceCodeLogin({
       onPrompt: ({ verificationUrl, userCode }) => {
-        const sep = '─'.repeat(52);
-        console.log(`\n${sep}`);
-        console.log('  Sign in to ChatGPT with a device code');
-        console.log(sep);
-        console.log('  1. On any device, open:');
-        console.log(`       ${verificationUrl}`);
-        console.log('  2. Enter this one-time code (expires in 15 min):');
-        console.log(`       ${userCode}`);
-        console.log(sep);
-        console.log('  Waiting for you to authorize…\n');
+        if (process.stdout.isTTY) {
+          process.stdout.write(`${ESC}H${ESC}2J`);
+          console.log(devicePrompt(verificationUrl, userCode, Math.max(40, Math.min(80, (process.stdout.columns || 80) - 1))).join('\n'));
+        } else {
+          console.log(`Sign in to ChatGPT: ${verificationUrl}\nDevice code: ${userCode}\nWaiting for authorization (expires in 15 minutes).`);
+        }
       },
     });
   } catch (err) {
-    console.error(`Device login failed: ${err.message}`);
+    console.error(errorMessage('DEVICE_LOGIN_FAILED', { message: err.message }));
     console.error('');
     console.error('Alternatives:');
     console.error('  teamcodex import         Import from existing Codex CLI credentials');
@@ -355,7 +362,7 @@ async function loginApiCommand() {
   rl.close();
 
   if (!apiKey.trim()) {
-    console.error('No API key provided');
+    console.error(errorMessage('API_KEY_MISSING'));
     process.exit(1);
   }
 
@@ -367,7 +374,10 @@ async function loginApiCommand() {
     }
     const entry = { name, type: 'apikey', apiKey: apiKey.trim() };
     const idx = diskConfig.accounts.findIndex(a => a.name === name);
-    if (idx >= 0) diskConfig.accounts[idx] = entry;
+    if (idx >= 0) {
+      preserveAccountRouting(diskConfig, diskConfig.accounts[idx], entry);
+      diskConfig.accounts[idx] = entry;
+    }
     else diskConfig.accounts.push(entry);
   });
   console.log(`Added API key account "${name}"`);
@@ -384,7 +394,7 @@ async function loginOAuthCommand() {
   try {
     creds = await loginOAuth();
   } catch (err) {
-    console.error(`OAuth login failed: ${err.message}`);
+    console.error(errorMessage('OAUTH_LOGIN_FAILED', { message: err.message }));
     console.error('');
     console.error('Alternatives:');
     console.error('  teamcodex login --device-auth   Headless / no local browser');
@@ -402,10 +412,10 @@ async function envCommand() {
   const config = await loadOrCreateConfig();
   const overrides = codexOverrideArgs(config);
   if (args.includes('--null')) {
-    process.stdout.write([config.proxy.apiKey, ...overrides].join('\0') + '\0');
+    process.stdout.write(`${[config.proxy.apiKey, ...overrides].join('\0')  }\0`);
     return;
   }
-  const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
+  const quote = value => `'${  value.replaceAll("'", "'\\''")  }'`;
   console.log(`TEAMCODEX_API_KEY=${quote(config.proxy.apiKey)} codex ${overrides.map(quote).join(' ')}`);
 }
 
@@ -431,7 +441,7 @@ function codexOverrideArgs(config) {
 async function writeCodexAuth(authPath, auth) {
   await mkdir(dirname(authPath), { recursive: true });
   const tmpPath = `${authPath}.${process.pid}.tmp`;
-  await writeFile(tmpPath, JSON.stringify(auth, null, 2) + '\n', { mode: 0o600 });
+  await writeFile(tmpPath, `${JSON.stringify(auth, null, 2)  }\n`, { mode: 0o600 });
   await rename(tmpPath, authPath);
 }
 
@@ -490,7 +500,7 @@ async function runCommand() {
   const settings = [];
   for (let i = 0; i < codexArgs.length && codexArgs[i] !== '--';) {
     if (['-c', '--config'].includes(codexArgs[i])) {
-      if (i + 1 >= codexArgs.length) throw new Error(`${codexArgs[i]} requires a value`);
+      if (i + 1 >= codexArgs.length) throw createError('ARGUMENT_VALUE_MISSING', { argument: codexArgs[i] });
       settings.push(...codexArgs.splice(i, 2));
     } else if (/^(--config|-c)=/.test(codexArgs[i])) settings.push(...codexArgs.splice(i, 1));
     else i++;
@@ -510,9 +520,9 @@ async function runCommand() {
 
   if (result.error) {
     if (result.error.code === 'ENOENT') {
-      console.error('Codex CLI not found in PATH. Install it first: npm install -g @openai/codex');
+      console.error(errorMessage('CODEX_NOT_FOUND'));
     } else {
-      console.error(`Failed to start codex: ${result.error.message}`);
+      console.error(errorMessage('CODEX_START_FAILED', { message: result.error.message }));
     }
     process.exit(1);
   }
@@ -591,10 +601,10 @@ async function apiCommand() {
   let account;
   if (accountName) {
     account = accounts.find(a => a.name === accountName);
-    if (!account) { console.error(`Account "${accountName}" not found`); process.exit(1); }
+    if (!account) { console.error(errorMessage('ACCOUNT_NOT_FOUND', { name: accountName })); process.exit(1); }
   } else {
     account = accounts.find(a => a.type === 'chatgpt') || accounts[0];
-    if (!account) { console.error('No accounts configured'); process.exit(1); }
+    if (!account) { console.error(errorMessage('NO_ACCOUNTS_CLI')); process.exit(1); }
   }
 
   const credential = account.accessToken || account.apiKey;
@@ -645,8 +655,9 @@ async function removeCommand() {
 
   const saved = await atomicConfigUpdate(diskConfig => {
     const idx = diskConfig.accounts.findIndex(a => a.name === name);
-    if (idx < 0) throw new Error(`Account "${name}" not found`);
+    if (idx < 0) throw createError('ACCOUNT_NOT_FOUND', { name });
     diskConfig.accounts.splice(idx, 1);
+    for (const pool of Object.values(diskConfig.routing?.pools ?? {})) pool.accounts = pool.accounts.filter(member => member !== name);
   });
   console.log(`Removed account "${name}"`);
   await notifyServerReload(saved, { removeMissing: true });
@@ -720,7 +731,11 @@ async function upsertChatGPTAccount(_config, name, creds, source = 'unknown') {
       account.name = `account-${n}`;
     }
     const idx = findConfigAccount(diskConfig, account);
-    if (idx >= 0) { diskConfig.accounts[idx] = account; updated = true; }
+    if (idx >= 0) {
+      preserveAccountRouting(diskConfig, diskConfig.accounts[idx], account);
+      diskConfig.accounts[idx] = account;
+      updated = true;
+    }
     else diskConfig.accounts.push(account);
   });
   console.log(`${updated ? 'Updated' : 'Added'} account "${account.name}"`);
@@ -745,7 +760,7 @@ async function notifyServerReload(config, { removeMissing = false } = {}) {
       headers,
       signal: AbortSignal.timeout(5000),
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) throw createError('PROXY_HTTP_ERROR', { status: res.status });
     const data = await res.json();
     const parts = [];
     if (data.added) parts.push(`${data.added} added`);
@@ -755,7 +770,7 @@ async function notifyServerReload(config, { removeMissing = false } = {}) {
   } catch (err) {
     const code = err.code || err.cause?.code;
     if (code === 'ECONNREFUSED' || code === 'ENOTFOUND' || code === 'EAI_AGAIN') return; // server not running — it'll load the config on start
-    console.log(`Note: could not reload running server (${err.message}) — restart it or press R in the TUI`);
+    console.log(errorMessage('RELOAD_NOTIFICATION_FAILED', { message: err.message }));
   }
 }
 
