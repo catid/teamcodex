@@ -5,3 +5,5 @@
 !test/
 !test/**
 !teamcodex.sh
+!scripts/
+!scripts/resume.py
