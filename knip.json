@@ -40,6 +40,15 @@
         "src/**/*.ts",
         "test/**/*.ts"
       ]
+    },
+    "apps/cli": {
+      "entry": [
+        "src/**/*.ts"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "test/**/*.ts"
+      ]
     }
   }
 }

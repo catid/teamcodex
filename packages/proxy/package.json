@@ -14,7 +14,10 @@
     "./auth/device": "./src/auth/device.ts",
     "./auth/callback": "./src/auth/callback.ts",
     "./auth/constants": "./src/auth/constants.ts",
-    "./auth/exchange": "./src/auth/exchange.ts"
+    "./auth/exchange": "./src/auth/exchange.ts",
+    "./server": "./src/http/server.ts",
+    "./http/types": "./src/http/types.ts",
+    "./auth/persistence": "./src/auth/persistence.ts"
   },
   "scripts": {
     "typecheck": "tsc --build"

@@ -1,0 +1,21 @@
+{
+  "name": "@teamcodex/cli",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./tui/style": "./src/tui/style.ts",
+    "./tui/panels": "./src/tui/panels.ts",
+    "./tui/login": "./src/tui/login.ts",
+    "./oauth": "./src/oauth.ts",
+    "./tui": "./src/tui/controller.ts",
+    "./tui/usage": "./src/tui/usage.ts"
+  },
+  "dependencies": {
+    "@teamcodex/core": "workspace:*",
+    "@teamcodex/proxy": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2"
+  }
+}

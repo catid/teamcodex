@@ -13,14 +13,14 @@ in this repository.
 | Area | Files |
 | --- | --- |
 | CLI dispatch, service wiring, token persistence, host Codex launch | `src/index.js` |
-| HTTP forwarding, authentication, SSE parsing, request retries | `src/server.js`, `src/retry.js` |
+| HTTP forwarding, authentication, SSE parsing, request retries | `packages/proxy/src/http/`, `packages/proxy/src/retry.ts` |
 | Account selection, quota state, token refresh | `packages/proxy/src/account-manager.ts` |
 | Account resolution, matching, hot reload | `packages/proxy/src/accounts.ts` |
 | Config validation, locking, atomic writes, backup/reset | `packages/proxy/src/config.ts` |
 | OAuth browser/device flows and credential import | `packages/proxy/src/auth/`, `src/oauth.js` (CLI handoff) |
 | Error codes, numeric identifiers, and messages | `packages/core/src/errors.ts`, [error table](errors.md) |
 | Usage polling and earned reset-credit redemption | `packages/proxy/src/usage-reset.ts` |
-| Native terminal dashboard | `src/tui.js`, `src/tui-view.js`, `src/tui-panels.js`; [extension guide](tui.md) |
+| Native terminal dashboard | `apps/cli/src/tui/`; [extension guide](tui.md) |
 | Live diagnostic and container health probe | `src/smoke.js`, `src/healthcheck.js` |
 | Docker launcher and installation | `teamcodex.sh`, `install.sh`, `compose.yaml`, `Dockerfile` |
 | Boot integration | `scripts/install-boot.py`, `scripts/start-at-boot.py` |

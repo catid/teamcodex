@@ -14,7 +14,8 @@
     "./accounts": "./src/accounts.ts",
     "./quota": "./src/quota.ts",
     "./telemetry": "./src/telemetry.ts",
-    "./quota-headers": "./src/quota-headers.ts"
+    "./quota-headers": "./src/quota-headers.ts",
+    "./response": "./src/response.ts"
   },
   "scripts": {
     "typecheck": "tsc --build",

@@ -5,6 +5,7 @@
     "": {
       "name": "teamcodex",
       "dependencies": {
+        "@teamcodex/cli": "workspace:*",
         "@teamcodex/core": "workspace:*",
         "@teamcodex/proxy": "workspace:*",
       },
@@ -22,6 +23,17 @@
         "playwright": "1.63.0",
         "typescript": "npm:@typescript/typescript6@6.0.2",
         "typescript-eslint": "8.70.0",
+      },
+    },
+    "apps/cli": {
+      "name": "@teamcodex/cli",
+      "version": "1.0.0",
+      "dependencies": {
+        "@teamcodex/core": "workspace:*",
+        "@teamcodex/proxy": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "1.4.2",
       },
     },
     "packages/core": {
@@ -168,6 +180,8 @@
     "@oxc-resolver/binding-win32-arm64-msvc": ["@oxc-resolver/binding-win32-arm64-msvc@11.24.2", "", { "os": "win32", "cpu": "arm64" }, "sha512-uokJqro2iBqkFvJdKQLP7d8/BUmFwESQFVmIJUQKj1Xn1a/LysJoe1vmeECLF5b3jsV8CAL5sEMJXX6SdK9Nhg=="],
 
     "@oxc-resolver/binding-win32-x64-msvc": ["@oxc-resolver/binding-win32-x64-msvc@11.24.2", "", { "os": "win32", "cpu": "x64" }, "sha512-UqGPmo56KDfLlfXFAFIrNflHT8tFxWGEivWg3Zeyp4Uy2NlKN1FGPr6/BxcLGG3+kZ6Wp14g5Uj+n71boqZfiw=="],
+
+    "@teamcodex/cli": ["@teamcodex/cli@workspace:apps/cli"],
 
     "@teamcodex/core": ["@teamcodex/core@workspace:packages/core"],
 

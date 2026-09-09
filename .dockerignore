@@ -5,6 +5,11 @@
 !bunfig.toml
 !src/
 !src/**/*.js
+!apps/
+!apps/cli/
+!apps/cli/package.json
+!apps/cli/src/
+!apps/cli/src/**/*.ts
 !packages/
 !packages/*/
 !packages/*/package.json

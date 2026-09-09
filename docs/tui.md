@@ -8,12 +8,12 @@ without hiding the footer. `u` opens detailed account and pool usage.
 
 ## Responsibilities
 
-- `tui.js`: terminal lifecycle, input, actions, and server event handlers.
-- `tui-view.js`: screen composition, account rows and context-sensitive footer.
-- `tui-panels.js`: bounded panel layout; add dashboard panels here.
-- `tui-style.js`: ANSI styles, visible width, clipping, padding and quota meters.
-- `telemetry.js`: normalized account/pool totals consumed by operator views.
-- `usage-view.js`: scrollable detailed usage using the same normalized snapshot.
+- `apps/cli/src/tui/controller.ts`: terminal lifecycle, input, actions, and server event handlers.
+- `apps/cli/src/tui/view.ts`: screen composition, account rows and context-sensitive footer.
+- `apps/cli/src/tui/panels.ts`: bounded panel layout; add dashboard panels here.
+- `apps/cli/src/tui/style.ts`: ANSI styles, visible width, clipping, padding and quota meters.
+- `packages/core/src/telemetry.ts`: normalized account/pool totals consumed by operator views.
+- `apps/cli/src/tui/usage.ts`: scrollable detailed usage using the same normalized snapshot.
 
 Renderers do not mutate configuration or perform provider I/O. Add actions to the
 controller; expose data in the public status snapshot and normalize it in telemetry
@@ -23,5 +23,5 @@ Unknown quota or reset credits remain unknown, rather than displaying a false ze
 
 Validation includes exact panel dimensions at four terminal sizes and real PTY
 screens rendered in Chromium, including masked key entry, OAuth handoffs, disabled
-accounts, selection scrolling, usage and resize recovery. Run `npm run test:tui`
+accounts, selection scrolling, usage and resize recovery. Run `bun run test:tui`
 and review `artifacts/tui/index.html`. These captures are not pixel baselines.

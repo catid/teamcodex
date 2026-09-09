@@ -23,14 +23,14 @@ item is unfinished; scaffolding or a renamed extension alone does not complete i
 - [ ] Migrate configuration transactions and credential persistence.
 - [x] Migrate account lifecycle and explicit identity checks across awaits.
 - [ ] Migrate OAuth, usage polling and reset reservations/idempotency.
-- [ ] Split HTTP admission, upstream attempts, retry policy and SSE accounting.
+- [x] Split HTTP admission, upstream attempts, retry policy and SSE accounting.
 - [x] Migrate persistent usage history and normalized status snapshots.
 - [ ] Preserve cancellation, pool isolation, backpressure and bounded buffering.
 
 ## CLI / TUI (`apps/cli`)
 
 - [ ] Separate command dispatch from commands and injected application services.
-- [ ] Migrate terminal lifecycle, input, pure panels and shared styles to TypeScript.
+- [x] Migrate terminal lifecycle, input, pure panels and shared styles to TypeScript.
 - [ ] Share typed telemetry between CLI status, usage and dashboard views.
 - [ ] Preserve API-key masking, browser/device PKCE and login handoffs.
 - [ ] Keep existing CLI arguments, exit codes, environment variables and paths.
@@ -85,3 +85,17 @@ item is unfinished; scaffolding or a renamed extension alone does not complete i
   and 168 legacy tests pass. Docker lifecycle: 13 pass; offline OAuth: 6 pass.
 - Next: HTTP admission/streaming seams, credential persistence callback, then CLI
   workspace and browser/terminal orchestration. Full Bun runtime remains unfinished.
+
+### HTTP and terminal stage
+
+- HTTP server, retries, rate limits, stream delivery and response accounting now
+  compile in proxy; browser orchestration and all TUI modules compile in CLI.
+- Routing spike (19 scenarios) and panel tests now run in Bun, alongside direct Bun
+  SSE tests. Typed auth-file mirroring is in proxy; serve wiring is still legacy.
+- Node PTY suite generated 20 screenshots; small terminal, usage and browser/device
+  login states were visually reviewed. Docker lifecycle passed all 13 scenarios.
+- Remaining: CLI commands/dispatch, status/smoke, legacy test migration, runtime and
+  deployment switch to Bun, then final full-scope verification.
+
+- Final stage gate: 69 Bun tests and 138 legacy tests pass; compiler, lint, Knip
+  and generated files pass. Node remains available for compatibility verification.

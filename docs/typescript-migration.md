@@ -55,3 +55,10 @@ aggregation are pure core modules; reset reservations and history persistence re
 in proxy. Browser launch/stdin/terminal presentation stay in CLI. Account identity
 checks across awaited refresh, imports and reset requests remain explicit; helper
 predicates re-read mutable state after awaits instead of trusting stale narrowing.
+
+HTTP forwarding is split under `packages/proxy/src/http`: server admission,
+upstream attempts, stream delivery, payload inspection, rate-limit policy and logs.
+`apps/cli/src/tui` owns terminal lifecycle and typed views; `apps/cli/src/oauth.ts`
+owns browser/stdin orchestration. Routing spikes and panel tests now run in Bun.
+The root `src/index.js` remains temporary command/service wiring; Node deployment
+is still an intermediate state, not migration completion.

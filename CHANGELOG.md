@@ -7,7 +7,7 @@
 - Shared terminal panels and offline browser/device OAuth coverage.
 
 ### Changed
-- Moved core policy, accounts, authentication protocol, usage resets and history into TypeScript workspaces.
+- Moved proxy policy, HTTP streaming, authentication, usage tracking and terminal UI into TypeScript workspaces.
 - Pinned Bun 1.4.2 with isolated installs and compiler checks.
 
 ### Fixed

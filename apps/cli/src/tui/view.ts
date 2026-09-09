@@ -1,10 +1,12 @@
-import { accountStatus } from './account-status.js';
-import { telemetry } from './telemetry.js';
-import { dashboard, usagePanel } from './tui-panels.js';
-import { bar,bold, cyan, dim, ESC, fitLine, gray, green, red, rpad, vw, yellow } from './tui-style.js';
-import { usageLines } from './usage-view.js';
+import { accountStatus } from '@teamcodex/core/accounts';
+import { telemetry } from '@teamcodex/core/telemetry';
 
-export function render() {
+import type { TUI } from './controller.ts';
+import { dashboard, usagePanel } from './panels.ts';
+import { bar,bold, cyan, dim, ESC, fitLine, gray, green, red, rpad, vw, yellow } from './style.ts';
+import { usageLines } from './usage.ts';
+
+export function render(this: TUI): void {
   if (!this.running) return;
   const W = process.stdout.columns || 80;
   const H = process.stdout.rows || 24;
@@ -25,10 +27,10 @@ export function render() {
   const port = this.config.proxy?.port || 1456;
   const oauthAccounts = telemetry(this.am.getStatus()).accounts.filter(account => account.auth === 'OAuth');
   const known = oauthAccounts.filter(account => account.resets != null);
-  const resetCount = known.reduce((total, account) => total + account.resets, 0);
+  const resetCount = known.reduce((total, account) => total + (account.resets ?? 0), 0);
   const resets = oauthAccounts.length ? `${resetCount}${known.length < oauthAccounts.length ? ' + ?' : ''}` : '—';
   const right = W >= 70 ? `Resets available ${cyan(resets)}  ·  Port ${port} ${green('▲')} ` : `Resets ${cyan(resets)} `;
-  lines.push(left + ' '.repeat(Math.max(1, W - vw(left) - vw(right))) + right);
+  lines.push(`${left}${' '.repeat(Math.max(1, W - vw(left) - vw(right)))}${right}`);
   lines.push(` ${  dim('─'.repeat(W - 2))}`);
 
   if (this.mode === 'usage') {
@@ -52,8 +54,9 @@ export function render() {
   process.stdout.write(buf);
 }
 
-export function renderAccount(idx, bw, showBoth) {
+export function renderAccount(this: TUI, idx: number, bw: number, showBoth: boolean): string {
   const a = this.am.accounts[idx];
+  if (!a) return "";
   const isCur = idx === this.am.currentIndex;
   const isSel = this.mode === 'select' && idx === this.selIdx;
 
@@ -106,13 +109,13 @@ export function renderAccount(idx, bw, showBoth) {
   let line = ` ${sel}${cur} ${name} ${type} ${status} ${l1} ${bar(r1, bw, t1)}`;
   if (showBoth) {
     const count = a.type === 'chatgpt' ? (a.usageReset.availableCredits ?? '?') : '—';
-    const credits = a.type === 'chatgpt' && a.usageReset.availableCredits > 0 ? cyan(count) : gray(count);
+    const credits = a.type === 'chatgpt' && (a.usageReset.availableCredits ?? 0) > 0 ? cyan(count) : gray(count);
     line += `  ${l2} ${bar(r2, bw, t2)}  Resets ${credits}`;
   }
   return line;
 }
 
-export function renderFooter() {
+export function renderFooter(this: TUI): string {
   switch (this.mode) {
     case 'usage': return ' ↑↓ scroll  u/Esc back';
     case 'normal':

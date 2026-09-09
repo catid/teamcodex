@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
-import { mkdir, readFile, rename,writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
 import { createInterface } from 'node:readline';
+
+import { updateCodexAuthIfMatching } from '@teamcodex/proxy/auth/persistence';
 
 import { AccountManager } from './account-manager.js';
 import { findConfigAccount, resolveAccounts, syncAccountsFromDisk } from './accounts.js';
@@ -438,53 +438,6 @@ function codexOverrideArgs(config) {
  * Atomically write codex's auth.json — codex reloads this file at runtime,
  * so it must never observe a partially written one.
  */
-async function writeCodexAuth(authPath, auth) {
-  await mkdir(dirname(authPath), { recursive: true });
-  const tmpPath = `${authPath}.${process.pid}.tmp`;
-  await writeFile(tmpPath, `${JSON.stringify(auth, null, 2)  }\n`, { mode: 0o600 });
-  await rename(tmpPath, authPath);
-}
-
-/**
- * Mirror freshly refreshed tokens into the Codex CLI's auth.json when it
- * holds tokens for the same account. Codex reloads auth.json before
- * refreshing (guarded reload) and skips its own refresh when the file has
- * newer tokens — without this, codex eventually tries to refresh a rotated
- * refresh token and dies with "refresh token was revoked".
- */
-async function updateCodexAuthIfMatching(account, newTokens) {
-  const authPath = defaultCodexAuthPath();
-  let auth;
-  try {
-    auth = JSON.parse(await readFile(authPath, 'utf-8'));
-  } catch {
-    return; // no codex auth.json (or unreadable) — nothing to sync
-  }
-
-  const tokens = auth.tokens || {};
-  const authInfo = accountInfoFromTokens({
-    accessToken: tokens.access_token,
-    idToken: tokens.id_token,
-    accountId: tokens.account_id,
-  });
-  const acctId = account.accountId
-    || accountInfoFromTokens({ accessToken: newTokens.accessToken, idToken: newTokens.idToken }).accountId;
-  if (!acctId || authInfo.accountId !== acctId) return;
-
-  await writeCodexAuth(authPath, {
-    ...auth,
-    tokens: {
-      ...tokens,
-      id_token: newTokens.idToken ?? tokens.id_token,
-      access_token: newTokens.accessToken,
-      refresh_token: newTokens.refreshToken,
-      account_id: acctId,
-    },
-    last_refresh: new Date().toISOString(),
-  });
-  console.log(`[TeamCodex] Synced refreshed tokens to codex auth.json ("${account.name}")`);
-}
-
 async function runCommand() {
   const config = await loadOrCreateConfig();
 

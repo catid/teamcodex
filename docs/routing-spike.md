@@ -1,6 +1,6 @@
 # Mock routing spike
 
-Run `node --test test/routing-spike.test.js`. All providers are loopback HTTP
+Run `bun test packages/proxy/test/routing-spike.test.ts`. All providers are loopback HTTP
 servers with fake credentials; the suite runs without Docker or provider access.
 
 ## Finding and fix

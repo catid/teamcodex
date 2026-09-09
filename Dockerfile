@@ -3,12 +3,15 @@ WORKDIR /dependencies
 COPY package.json bun.lock bunfig.toml ./
 COPY packages/core/package.json ./packages/core/package.json
 COPY packages/proxy/package.json ./packages/proxy/package.json
+COPY apps/cli/package.json ./apps/cli/package.json
 RUN bun install --production --frozen-lockfile
 
 FROM node:24-bookworm-slim
 WORKDIR /app
 COPY package.json ./
 COPY src/ ./src/
+COPY apps/cli/package.json ./apps/cli/package.json
+COPY apps/cli/src/ ./apps/cli/src/
 COPY packages/core/package.json ./packages/core/package.json
 COPY packages/core/src/ ./packages/core/src/
 COPY packages/proxy/package.json ./packages/proxy/package.json

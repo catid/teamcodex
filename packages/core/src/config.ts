@@ -5,6 +5,7 @@ import { validateRouting } from './routing/config.ts';
 
 export interface AccountConfig extends AccountRouting {
   type: 'chatgpt' | 'apikey';
+  source?: string;
   accountId?: string | null;
   apiKey?: string;
   accessToken?: string;
@@ -58,7 +59,7 @@ function optionalNumber(value: unknown, min: number, max: number, integer = fals
 function validAccount(value: unknown): boolean {
   if (!isRecord(value) || typeof value.name !== 'string' || !value.name.trim() ||
       (value.type !== 'chatgpt' && value.type !== 'apikey')) return false;
-  for (const key of ['apiKey', 'accessToken', 'importFrom']) {
+  for (const key of ['apiKey', 'accessToken', 'importFrom', 'source']) {
     if (value[key] !== undefined && typeof value[key] !== 'string') return false;
   }
   for (const key of ['accountId', 'refreshToken', 'idToken', 'planType']) {
