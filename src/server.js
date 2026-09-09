@@ -100,7 +100,7 @@ export function createProxyServer(accountManager, config, hooks = {}) {
       // Track request
       const reqId = ++requestCounter;
       const requestStarted = performance.now();
-      const ctx = { account: null, accountRef: null, status: null, attempts: 0, poolName, networkRetries: 0, recovered: false, refreshed: new Set() };
+      const ctx = { account: null, accountRef: null, status: null, attempts: 0, excluded: new Set(), poolName, networkRetries: 0, recovered: false, refreshed: new Set() };
       let recorded = false;
       const recordRequest = () => {
         if (recorded) return;
@@ -195,7 +195,7 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
 
   if (res.destroyed || res.writableEnded) return;
   // A bounded recovery check can return an account to service after a reset.
-  let account = accountManager.getActiveAccount(ctx.poolName);
+  let account = accountManager.getActiveAccount(ctx.poolName, ctx.excluded);
   if (!account && !ctx.recovered && hooks.onAccountsUnavailable) {
     ctx.recovered = true;
     let timer;
@@ -214,7 +214,7 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
       res.removeListener('close', onClose);
     }
     if (res.destroyed) return;
-    account = accountManager.getActiveAccount(ctx.poolName);
+    account = accountManager.getActiveAccount(ctx.poolName, ctx.excluded);
   }
   if (!account) {
     ctx.status = 429;
@@ -326,6 +326,7 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
         await upstreamRes.body?.cancel();
         clearTimeout(timeout);
         await retryDelay(ctx.networkRetries++, controller.signal);
+        ctx.excluded.add(account);
         if (!accountManager.routing) accountManager.rotateAfter(account);
         lease.observe(failed, headerLatency);
         lease.release();
@@ -504,6 +505,7 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
         try { await retryDelay(ctx.networkRetries++, waiting.signal); }
         catch { return; }
         finally { res.removeListener('close', cancel); }
+        ctx.excluded.add(account);
         if (!accountManager.routing) accountManager.rotateAfter(account);
         lease.observe(failed, headerLatency);
         lease.release();

@@ -96,3 +96,9 @@ Adaptive feedback never reserves or spends usage-reset credits.
 Without explicit pools, startup and failover use a shuffled routing schedule while
 keeping display/configuration indexes stable. Explicit pool strategies retain
 their specified member ordering and adaptive/weighted scheduling behavior.
+
+Transient retries prefer eligible pool members not yet rejected by this request's
+503/network attempts, before applying quota preference and the pool strategy.
+Once every eligible member has been tried, retries may reuse members within the
+existing retry budget. The exclusion is request-local: it never disables accounts
+for other clients, bypasses pool membership, or changes configured weights.

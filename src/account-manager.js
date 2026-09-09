@@ -115,13 +115,15 @@ export class AccountManager {
    * Get the best available account, rotating if the current one is near quota.
    * Returns null if all accounts are exhausted.
    */
-  getActiveAccount(poolName) {
+  getActiveAccount(poolName, excluded = new Set()) {
     if (this.routing || poolName) {
       const name = poolName ?? this.routing?.defaultPool;
       const pool = this.routing?.pools[name];
       if (!pool) throw createError('ROUTING_POOL_UNKNOWN', { name: name ?? '' });
       const members = pool.accounts.map(name => this.accounts.find(a => a.name === name)).filter(Boolean);
-      const usable = members.filter(a => this._isUsable(a));
+      const eligible = members.filter(a => this._isUsable(a));
+      const untried = eligible.filter(a => !excluded.has(a));
+      const usable = untried.length ? untried : eligible;
       const preferred = usable.filter(a => !this._isNearQuota(a, pool.switchThreshold));
       const candidates = preferred.length ? preferred : usable;
       const chosen = pool.strategy === 'failover' ? candidates[0] ?? null : this.scheduler.select(name, candidates, pool.strategy === 'adaptive' ? a => this.adaptive.weight(a, a.weight) : undefined);
