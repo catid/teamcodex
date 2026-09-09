@@ -103,7 +103,9 @@ test('interactive TUI states with mock requests and review screenshots', { timeo
   let loginOutput = '';
   child.onData(data => {
     loginOutput += data;
-    const match = loginOutput.match(/https:\/\/auth\.openai\.com\/oauth\/authorize\?[^\s]+/);
+    const plain = loginOutput.replaceAll(String.fromCharCode(27), '').replace(/\[[0-9;]*m/g, '');
+    const joined = plain.split(/\r?\n/).map(line => line.replace(/^│ /, '').replace(/ *│$/, '')).join('');
+    const match = joined.match(/https:\/\/auth\.openai\.com\/oauth\/authorize\?[^\s]+/);
     if (match && !authorize) authorize = new URL(match[0]);
     writes = writes.then(() => page.evaluate(data => new Promise(resolve => window.terminal.write(data, resolve)), data));
     // Keep asynchronous browser errors visible at the next capture.
@@ -175,6 +177,8 @@ test('interactive TUI states with mock requests and review screenshots', { timeo
   assert.deepEqual(calls.at(-1), { path: '/backend-api/codex/responses', authorization: 'Bearer fake-oauth-access', accountId: 'mock-oauth-account' });
   child.write('u');
   await capture('12-pool-account-usage', 'Pools (member account totals)');
+  assert.match(await text(), /╭─ Usage/);
+  assert.match(await text(), /Resets available/);
   assert.match(await text(), /in 12 \| out 8/);
   child.write('\x1b');
   throttle = true;
@@ -221,6 +225,7 @@ test('interactive TUI states with mock requests and review screenshots', { timeo
   await waitFor('OAuth browser');
   child.write('o');
   await capture('17-browser-login', 'Paste callback URL');
+  assert.match(await text(), /╭─ Browser login/);
   assert.ok(authorize);
   const callback = await fetch(`http://127.0.0.1:1455/auth/callback?code=tui-browser&state=${authorize.searchParams.get('state')}`);
   await callback.text();
@@ -231,6 +236,8 @@ test('interactive TUI states with mock requests and review screenshots', { timeo
   await waitFor('OAuth browser');
   child.write('d');
   await capture('19-device-login', 'TUI-CODE');
+  assert.match(await text(), /╭─ Device login/);
+  assert.ok(!(await text()).includes('Browser login'));
   deviceReady = true;
   await capture('20-device-login-return', 'of 35');
   assert.ok(JSON.parse(await readFile(configPath, 'utf8')).accounts.some(account => account.accountId === 'tui-device'));

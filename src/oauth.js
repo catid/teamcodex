@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 
 import { createError, errorMessage } from './errors.js';
+import { browserPrompt } from './tui-login.js';
+import { ESC } from './tui-style.js';
 
 // OAuth config (matches the Codex CLI's registered client)
 const OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
@@ -185,8 +187,13 @@ export async function loginOAuth({ onAuthorize } = {}) {
   authUrl.searchParams.set('codex_cli_simplified_flow', 'true');
   authUrl.searchParams.set('originator', 'codex_cli_rs');
 
-  console.log('Opening browser for authentication...');
-  console.log(`If it doesn't open, visit:\n  ${authUrl.toString()}\n`);
+  if (process.stdout.isTTY) {
+    process.stdout.write(`${ESC}H${ESC}2J`);
+    console.log(browserPrompt(authUrl.toString(), Math.max(40, Math.min(100, (process.stdout.columns || 80) - 1))).join('\n'));
+  } else {
+    console.log('Opening browser for authentication...');
+    console.log(`If it doesn't open, visit:\n  ${authUrl.toString()}\n`);
+  }
 
   // Wait for either the callback server or manual paste from stdin
   let authResult;

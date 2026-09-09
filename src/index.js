@@ -15,6 +15,8 @@ deviceCodeLogin,   importCredentials, loginOAuth, } from './oauth.js';
 import { preserveAccountRouting } from './routing.js';
 import { createProxyServer } from './server.js';
 import { TUI } from './tui.js';
+import { devicePrompt } from './tui-login.js';
+import { ESC } from './tui-style.js';
 import { UsageResetMonitor } from './usage-reset.js';
 
 const args = process.argv.slice(2);
@@ -322,16 +324,12 @@ async function loginDeviceCommand() {
   try {
     creds = await deviceCodeLogin({
       onPrompt: ({ verificationUrl, userCode }) => {
-        const sep = '─'.repeat(52);
-        console.log(`\n${sep}`);
-        console.log('  Sign in to ChatGPT with a device code');
-        console.log(sep);
-        console.log('  1. On any device, open:');
-        console.log(`       ${verificationUrl}`);
-        console.log('  2. Enter this one-time code (expires in 15 min):');
-        console.log(`       ${userCode}`);
-        console.log(sep);
-        console.log('  Waiting for you to authorize…\n');
+        if (process.stdout.isTTY) {
+          process.stdout.write(`${ESC}H${ESC}2J`);
+          console.log(devicePrompt(verificationUrl, userCode, Math.max(40, Math.min(80, (process.stdout.columns || 80) - 1))).join('\n'));
+        } else {
+          console.log(`Sign in to ChatGPT: ${verificationUrl}\nDevice code: ${userCode}\nWaiting for authorization (expires in 15 minutes).`);
+        }
       },
     });
   } catch (err) {

@@ -1,6 +1,6 @@
 import { accountStatus } from './account-status.js';
 import { telemetry } from './telemetry.js';
-import { dashboard } from './tui-panels.js';
+import { dashboard, usagePanel } from './tui-panels.js';
 import { bar,bold, cyan, dim, ESC, fitLine, gray, green, red, rpad, vw, yellow } from './tui-style.js';
 import { usageLines } from './usage-view.js';
 
@@ -18,15 +18,6 @@ export function render() {
     return;
   }
 
-  if (this.mode === 'usage') {
-    const content = usageLines(this.am.getStatus());
-    this.usageOffset = Math.min(this.usageOffset, Math.max(0, content.length - (H - 2)));
-    const lines = content.slice(this.usageOffset, this.usageOffset + H - 2);
-    while (lines.length < H - 2) lines.push('');
-    lines.push('─'.repeat(W), ' ↑↓ scroll  u/Esc back');
-    process.stdout.write(`${ESC}H${lines.map(line => fitLine(line, W)).join('\r\n')}${ESC}?25l`);
-    return;
-  }
   const lines = [];
 
   // ── Header
@@ -40,7 +31,11 @@ export function render() {
   lines.push(left + ' '.repeat(Math.max(1, W - vw(left) - vw(right))) + right);
   lines.push(` ${  dim('─'.repeat(W - 2))}`);
 
-  lines.push(...dashboard(this, W, H - 4));
+  if (this.mode === 'usage') {
+    const result = usagePanel(usageLines(this.am.getStatus()).slice(2), W, H - 4, this.usageOffset);
+    this.usageOffset = result.offset;
+    lines.push(...result.lines);
+  } else lines.push(...dashboard(this, W, H - 4));
 
   // ── Footer
   lines.push(` ${  dim('─'.repeat(W - 2))}`);
@@ -119,6 +114,7 @@ export function renderAccount(idx, bw, showBoth) {
 
 export function renderFooter() {
   switch (this.mode) {
+    case 'usage': return ' ↑↓ scroll  u/Esc back';
     case 'normal':
       if ((process.stdout.columns || 80) < 70) return ' u usage  s switch  a add  r remove  R reload  q quit';
       return ` ${bold('u')}sage  ${bold('s')}witch  ${bold('a')}dd  ${bold('r')}emove  ${bold('R')}eload  ${bold('q')}uit`;

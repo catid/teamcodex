@@ -2,7 +2,7 @@ import { telemetry } from './telemetry.js';
 import { cyan, dim, fitLine } from './tui-style.js';
 
 /** @param {string} title @param {string[]} content @param {number} width @param {number} height */
-function panel(title, content, width, height) {
+export function panel(title, content, width, height) {
   const top = `╭─ ${title} ${'─'.repeat(Math.max(0, width - title.length - 5))}╮`;
   const rows = Array.from({ length: Math.max(0, height - 2) }, (_, i) => `${dim('│')}${fitLine(content[i] ?? '', width - 2)}${dim('│')}`);
   return [cyan(top), ...rows, dim(`╰${'─'.repeat(width - 2)}╯`)];
@@ -50,4 +50,22 @@ export function dashboard(tui, width, height) {
   ], width, telemetryHeight));
   const activity = [...active, ...tui.log.map(entry => ` ${entry.t} ${entry.msg}`)];
   return [...upper, ...panel(`Activity · ${tui.active.size} active`, activity, width, height - panelHeight - telemetryHeight)];
+}
+
+/** Scrollable usage content shares the dashboard frame and wraps long values.
+ * @param {string[]} content @param {number} width @param {number} height @param {number} offset
+ * @returns {{lines: string[], offset: number}}
+ */
+export function usagePanel(content, width, height, offset) {
+  const inner = Math.max(1, width - 4);
+  const wrapped = content.flatMap(line => {
+    const characters = Array.from(line);
+    if (!characters.length) return [''];
+    const rows = [];
+    for (let i = 0; i < characters.length; i += inner) rows.push(` ${characters.slice(i, i + inner).join('')}`);
+    return rows;
+  });
+  const capacity = Math.max(1, height - 2);
+  const start = Math.max(0, Math.min(offset, wrapped.length - capacity));
+  return { lines: panel('Usage · since proxy start', wrapped.slice(start, start + capacity), width, height), offset: start };
 }
