@@ -132,6 +132,8 @@ API key support is experimental and uses your OpenAI platform account. The proxy
 
 TeamCodex checks every ChatGPT account at startup and every five minutes, including accounts currently waiting for their usage limits to reset. It reads the provider's usage windows and available **earned reset credits**. At or above 98% usage in the most-used reported window, an account with a confirmed available credit automatically redeems one. Accounts require a known ChatGPT account ID for automatic redemption; `login` and normal Codex imports populate it.
 
+The threshold applies separately to each account's own usage and credit balance. Pool averages, the number of accounts polled, and the currently selected account do not determine eligibility. For example, if account A is at 99% and account B is at 20%, only A qualifies for a new redemption, using A's credits and credentials. Conversely, an account at 97.99% remains ineligible even when the pool average exceeds 98%. The check uses the highest utilization across that account's reported windows, including its five-hour and weekly windows.
+
 This implements the provider contract inspected in [Bifrost's ChatGPT reset controller](https://github.com/c0ldfront/bifrost/blob/fa8ee27/deploy/oauth/pi-account.mjs) and its [reset policies](https://github.com/c0ldfront/bifrost/blob/fa8ee27/plugins/oauthprovider/README.md). TeamCodex uses a threshold for each account, fitting its account rotation model.
 
 The defaults are enabled, including when an older config omits this section:
