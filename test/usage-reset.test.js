@@ -105,7 +105,7 @@ test('API accounts and ChatGPT accounts without a stable identity never redeem c
 test('all ChatGPT accounts, including inactive ones, are checked for available resets', async t => {
   const f = await fixture(t, { accounts: [account(), account('account-2')] });
   await f.monitor.check();
-  assert.deepEqual(f.posts().map(r => r.headers['chatgpt-account-id']), ['account-1', 'account-2']);
+  assert.deepEqual(f.posts().map(r => r.headers['chatgpt-account-id']).sort(), ['account-1', 'account-2']);
 });
 
 for (const outcome of ['no_credit', 'nothing_to_reset']) {
