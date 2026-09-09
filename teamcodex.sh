@@ -12,7 +12,9 @@ ROOT="$(cd -P -- "$(dirname -- "$SOURCE")" && pwd)"
 export TEAMCODEX_CONFIG_DIR="${TEAMCODEX_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/teamcodex}"
 export TEAMCODEX_CODEX_HOME="${TEAMCODEX_CODEX_HOME:-${CODEX_HOME:-$HOME/.codex}}"
 TEAMCODEX_UID="$(id -u)"
-TEAMCODEX_GID="$(id -g)"
+# sg/newgrp changes the process's primary group. Keep the container's group
+# stable so switching between a fresh shell and old tmux does not recreate it.
+TEAMCODEX_GID="$(id -g "$(id -un)")"
 export TEAMCODEX_UID TEAMCODEX_GID
 export TEAMCODEX_PORT="${TEAMCODEX_PORT:-1456}"
 

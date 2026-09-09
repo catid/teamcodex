@@ -113,9 +113,11 @@ async function staleGroupFixture(t, { membership = 'stale', unavailable = false 
     id: `const args = process.argv.slice(2);
 if (args[0] === '-un') console.log('tester');
 else if (args[0] === '-nG') console.log(${JSON.stringify(membership)} === 'current' || (args.length > 1 && ${JSON.stringify(membership)} !== 'absent') ? 'tester docker' : 'tester');
+else if (args[0] === '-g' && args.length === 1 && process.env.TEST_DOCKER_GROUP_ACTIVE) console.log('111');
 else console.log('1000');`,
     docker: `import { spawnSync } from 'node:child_process';
 const args = process.argv.slice(2);
+if (process.env.TEAMCODEX_GID !== '1000') { console.error('container group changed'); process.exit(2); }
 if (args[0] === 'info' && (${unavailable} || !process.env.TEST_DOCKER_GROUP_ACTIVE)) {
   console.error('permission denied connecting to Docker socket'); process.exit(1);
 }
