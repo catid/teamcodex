@@ -4,28 +4,23 @@
     "codex",
     "xdg-open"
   ],
-  "ignoreDependencies": [
-    "@xterm/xterm"
-  ],
   "workspaces": {
     ".": {
       "entry": [
-        "src/healthcheck.js",
-        "e2e/mock-provider.js",
-        "e2e/redirect-auth.js",
-        "e2e/oauth-transport.js",
-        "e2e/backpressure.js"
+        "e2e/mock-provider.ts",
+        "e2e/redirect-auth.ts",
+        "e2e/oauth-transport.ts",
+        "e2e/backpressure.ts",
+        "e2e/*.test.ts"
       ],
       "project": [
-        "src/**/*.js",
-        "test/**/*.js",
-        "e2e/**/*.js",
+        "e2e/**/*.ts",
         "scripts/**/*.ts"
       ]
     },
     "packages/core": {
       "entry": [
-        "src/**/*.ts"
+        "test/**/*.test.ts"
       ],
       "project": [
         "src/**/*.ts",
@@ -34,7 +29,8 @@
     },
     "packages/proxy": {
       "entry": [
-        "src/**/*.ts"
+        "src/healthcheck.ts",
+        "test/**/*.test.ts"
       ],
       "project": [
         "src/**/*.ts",
@@ -43,7 +39,7 @@
     },
     "apps/cli": {
       "entry": [
-        "src/**/*.ts"
+        "test/**/*.test.ts"
       ],
       "project": [
         "src/**/*.ts",

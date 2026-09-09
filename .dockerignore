@@ -3,8 +3,6 @@
 !package.json
 !bun.lock
 !bunfig.toml
-!src/
-!src/**/*.js
 !apps/
 !apps/cli/
 !apps/cli/package.json
@@ -16,7 +14,10 @@
 !packages/*/src/
 !packages/*/src/**/*.ts
 !test/
-!test/**/*.test.js
+!packages/*/test/
+!packages/*/test/**/*.ts
+!apps/cli/test/
+!apps/cli/test/**/*.ts
 !teamcodex.sh
 !scripts/
 !scripts/errors.sh

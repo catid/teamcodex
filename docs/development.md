@@ -12,21 +12,21 @@ in this repository.
 
 | Area | Files |
 | --- | --- |
-| CLI dispatch, service wiring, token persistence, host Codex launch | `src/index.js` |
+| CLI dispatch, service wiring, token persistence, host Codex launch | `apps/cli/src/main.ts`, `apps/cli/src/commands/` |
 | HTTP forwarding, authentication, SSE parsing, request retries | `packages/proxy/src/http/`, `packages/proxy/src/retry.ts` |
 | Account selection, quota state, token refresh | `packages/proxy/src/account-manager.ts` |
 | Account resolution, matching, hot reload | `packages/proxy/src/accounts.ts` |
 | Config validation, locking, atomic writes, backup/reset | `packages/proxy/src/config.ts` |
-| OAuth browser/device flows and credential import | `packages/proxy/src/auth/`, `src/oauth.js` (CLI handoff) |
+| OAuth browser/device flows and credential import | `packages/proxy/src/auth/`, `apps/cli/src/oauth.ts` (CLI handoff) |
 | Error codes, numeric identifiers, and messages | `packages/core/src/errors.ts`, [error table](errors.md) |
 | Usage polling and earned reset-credit redemption | `packages/proxy/src/usage-reset.ts` |
 | Native terminal dashboard | `apps/cli/src/tui/`; [extension guide](tui.md) |
-| Live diagnostic and container health probe | `src/smoke.js`, `src/healthcheck.js` |
+| Live diagnostic and container health probe | `apps/cli/src/commands/smoke.ts`, `packages/proxy/src/healthcheck.ts` |
 | Docker launcher and installation | `teamcodex.sh`, `install.sh`, `compose.yaml`, `Dockerfile` |
 | Boot integration | `scripts/install-boot.py`, `scripts/start-at-boot.py` |
 
 Operational instructions belong in [README.md](../README.md). The native entry point
-is `node src/index.js`; `teamcodex.sh` manages Docker and launches Codex on the host.
+is `bun apps/cli/src/index.ts`; `teamcodex.sh` manages Docker and launches Codex on the host.
 The two paths have different config locations, documented in the README.
 
 ## Invariants to preserve
@@ -34,31 +34,31 @@ The two paths have different config locations, documented in the README.
 - **Config transactions:** use `atomicConfigUpdate` for read/modify/write operations.
   It re-reads under a cross-process lock; saving a stale in-memory config can discard
   concurrent CLI changes. Preserve atomic rename, restrictive file permissions,
-  and reset backups (`test/config.test.js`).
+  and reset backups (`packages/proxy/test/config-transactions.test.ts`).
 - **Account identity across awaits:** reload can remove, replace, or reorder accounts
   while a request or refresh is pending. Retain the account object and recheck
   identity/credentials before applying results; an old array index must not update
   another account. Token persistence must not overwrite newer imported credentials
-  (`test/accounts.test.js`, `test/server.test.js`).
+  (`packages/proxy/test/accounts.test.ts`, `packages/proxy/test/server.test.ts`).
 - **Forwarding and retries:** ChatGPT paths pass through; API-key accounts rewrite
   Codex response paths to the public API. Preserve bounded retries and immediate
   429 rotation. Once output is sent, close a failed stream instead of replaying the
   request. Preserve client-disconnect cancellation, idle deadlines, and incremental
-  SSE parsing (`test/server.test.js`).
+  SSE parsing (`packages/proxy/test/server.test.ts`).
 - **Usage-reset persistence:** reserve a redemption on disk before its POST. Retain
   its request ID when the outcome is uncertain, reuse that ID on retry, and preserve
   pending IDs and cooldowns through installation reset. Verify usage afterward
-  before recovering an exhausted account (`test/usage-reset.test.js`).
+  before recovering an exhausted account (`packages/proxy/test/usage-reset.test.ts`).
 - **Credentials and launchers:** authenticate proxy sessions with the proxy key;
   refresh upstream tokens in the proxy. Sync host auth only for a matching account.
   Preserve literal argument boundaries, paths with spaces, and the caller's working
   directory. Native loopback access bypasses the key unless
-  `TEAMCODEX_REQUIRE_API_KEY=1`; Compose sets that flag (`test/cli.test.js`,
-  `test/oauth.test.js`, `test/server.test.js`).
+  `TEAMCODEX_REQUIRE_API_KEY=1`; Compose sets that flag (`apps/cli/test/commands.test.ts`,
+  `apps/cli/test/oauth.test.ts`, `packages/proxy/test/server.test.ts`).
 
 ## Verification
 
-`test/defects.test.js` covers 20 regression scenarios across routing validation,
+`apps/cli/test/defects.test.ts` covers 20 regression scenarios across routing validation,
 pool isolation, credential handling, OAuth state, error serialization, usage totals,
 ignore patterns, request validation, and account status. The Git-ignore case runs
 only in a checkout; the runtime Docker test image intentionally contains no `.git`.
@@ -67,19 +67,18 @@ only in a checkout; the runtime Docker test image intentionally contains no `.gi
 examples and lockfiles. `.dockerignore` uses an explicit allowlist
 for both Dockerfiles, with credential/log exclusions applied last.
 
-Use Bun 1.4.2 and `bun install --frozen-lockfile` for development. Node 22.13+
-or 24+ still runs legacy entry points during migration. `bun run check` checks
-generated errors, strict types, ESLint, Knip, Bun workspace tests and legacy tests.
-Use `npm run lint` or `npm run knip` for individual checks. The test runner itself
-(`node --test`) needs no dependencies and uses temporary files, fake credentials,
-mocked commands, and local HTTP servers.
+Use Bun 1.4.2 and `bun install --frozen-lockfile`. `bun run check` checks generated
+errors, strict types, ESLint, Knip and all workspace tests. `bun run lint:fix`
+sorts imports and applies safe lint fixes. Tests use temporary files, fake
+credentials and local HTTP servers. OAuth unit tests and separate OAuth/TUI E2E
+share callback port 1455, so run those commands sequentially.
 
-ESLint uses the current flat config API and recommended rules with Node globals.
-Import/export sorting is automatic with `npm run lint:fix` using simple-import-sort.
+ESLint uses typed flat configuration and TypeScript recommended rules with Node-compatible globals.
+Import/export sorting is automatic with `bun run lint:fix` using simple-import-sort.
 Global `isNaN` is forbidden; use explicit numeric conversion and `Number.isNaN`.
 Use template literals for interpolation. Keep assignments in standalone statements;
 `for` loop initialization and updates are allowed, but assignments in conditions are not.
-Knip discovers the CLI and tests from package metadata and its Node plugin; its
+Knip discovers the CLI and tests from workspace metadata and explicit entries; its
 explicit healthcheck entry is invoked by Compose. `codex` and `xdg-open` are external
 host binaries, intentionally excluded from npm dependency reporting.
 
@@ -91,7 +90,7 @@ Register application errors in `packages/core/src/errors.ts`; see [the error tab
 Run `bun run errors:generate` after changing definitions. Shell and Python adapters
 are generated so host launchers do not require Node. Do not edit generated files.
 
-CI in `.github/workflows/test.yaml` runs Node.js 22 and 24 on Ubuntu and macOS,
+CI in `.github/workflows/test.yaml` runs pinned Bun on Ubuntu and macOS,
 checks Bash syntax, builds the application image, and runs the Ubuntu test image:
 
 ```sh
@@ -104,7 +103,7 @@ Use these for container changes and report any unavailable checks. Native tests
 do not establish Docker or boot-service integration. `smoke`, including `--rotate`,
 uses configured accounts and live upstream requests; it is not an offline test.
 
-Run `npm run test:e2e` for Docker lifecycle and mock-provider integration checks;
+Run `bun run test:e2e` for Docker lifecycle and mock-provider integration checks;
 see [E2E coverage](e2e.md). CI runs this separately from the local suite.
 
 Reset reservation regressions include credential replacement on disk, removal from
@@ -115,8 +114,8 @@ for the upstream implementation and fixture evidence behind these rules.
 
 ## Upstream integration (cbdbd32)
 
-The main-branch integration adds `stats.js` for persistent usage history and
-`status.js` for the CLI status dashboard, plus Python resume/update helpers.
+The main-branch integration adds persistent usage history and
+the CLI status dashboard, plus Python resume/update helpers.
 Run `python3 -m unittest discover -s test -p 'test_*.py'` for helper changes.
 History counters remain separate from the TUI's since-start account totals and
 from provider quota/reset-credit policy. Explicit pools retain their configured

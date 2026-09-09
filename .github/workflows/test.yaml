@@ -1,17 +1,13 @@
 name: Test
 on: [push, pull_request]
 jobs:
-  node:
+  bun:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
-        node: [22, 24]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
@@ -24,23 +20,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
       # Exercise image startup even when the checkout has owner-only permissions.
-      - run: chmod -R go-rwx package.json src
+      - run: chmod -R go-rwx package.json apps packages
       - run: docker build -t teamcodex:local .
       - run: docker run --rm --read-only --user 12345:12345 teamcodex:local help
       - run: docker build -f test/Dockerfile.ubuntu -t teamcodex-test:ubuntu .
       - run: docker run --rm teamcodex-test:ubuntu
-      - run: node --test e2e/docker.test.js
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bun run test:e2e
   tui:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2

@@ -6,13 +6,11 @@ COPY packages/proxy/package.json ./packages/proxy/package.json
 COPY apps/cli/package.json ./apps/cli/package.json
 RUN bun install --production --frozen-lockfile
 
-FROM node:24-bookworm-slim AS node
 FROM ubuntu:24.04
 RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
-COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=dependencies /usr/local/bin/bun /usr/local/bin/bun
 WORKDIR /workspace
 COPY package.json ./
-COPY src/ ./src/
 COPY apps/cli/package.json ./apps/cli/package.json
 COPY apps/cli/src/ ./apps/cli/src/
 COPY packages/core/package.json ./packages/core/package.json
@@ -20,10 +18,13 @@ COPY packages/core/src/ ./packages/core/src/
 COPY packages/proxy/package.json ./packages/proxy/package.json
 COPY packages/proxy/src/ ./packages/proxy/src/
 COPY --from=dependencies /dependencies/node_modules/ ./node_modules/
+COPY packages/core/test/ ./packages/core/test/
+COPY packages/proxy/test/ ./packages/proxy/test/
+COPY apps/cli/test/ ./apps/cli/test/
 COPY test/ ./test/
 COPY teamcodex.sh ./
 COPY scripts/errors.sh ./scripts/errors.sh
 COPY scripts/resume.py scripts/update.py ./scripts/
 RUN chmod -R a+rX /workspace
 USER ubuntu
-CMD ["node", "--test"]
+CMD ["bun", "test", "packages/core/test", "packages/proxy/test", "apps/cli/test"]

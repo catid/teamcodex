@@ -1,11 +1,9 @@
 # Working in TeamCodex
 
-TeamCodex is a multi-account Codex HTTP proxy migrating to strict TypeScript and
-Bun 1.4.2 with isolated workspaces. Track migration work in
-[IMPLEMENTATION_CHECKLIST.md](IMPLEMENTATION_CHECKLIST.md); follow the boundaries in
-[docs/typescript-migration.md](docs/typescript-migration.md). Legacy JavaScript and
-Node commands remain temporary until equivalent Bun checks pass. Do not mark the
-migration complete while those paths still provide required behavior.
+TeamCodex is a multi-account Codex HTTP proxy using strict TypeScript and Bun 1.4.2
+with isolated workspaces. Follow [docs/typescript-migration.md](docs/typescript-migration.md)
+for package boundaries and [IMPLEMENTATION_CHECKLIST.md](IMPLEMENTATION_CHECKLIST.md)
+for verified migration work.
 
 Read [README.md](README.md) for commands, configuration, and installation. Read
 [docs/development.md](docs/development.md) before changing account lifecycle,
@@ -57,9 +55,9 @@ bun run check
 bash -n teamcodex.sh install.sh install-team-repos.sh run-team-servers.sh
 ```
 
-For focused iteration, use `node --test test/server.test.js` (or the relevant test
+For focused iteration, use `bun test packages/proxy/test/server.test.ts` (or the relevant test
 file). Use fake credentials, local upstreams, and temporary config/auth directories,
-following `test/`. Run the full suite before handing off code changes.
+following the workspace tests. Run the full suite before handing off code changes.
 
 Keep Bash launchers compatible with macOS Bash 3.2 and Ubuntu. For container changes,
 run the Docker checks in [docs/development.md](docs/development.md#verification).

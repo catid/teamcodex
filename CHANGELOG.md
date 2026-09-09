@@ -7,8 +7,8 @@
 - Shared terminal panels and offline browser/device OAuth coverage.
 
 ### Changed
-- Moved proxy policy, HTTP streaming, authentication, usage tracking and terminal UI into TypeScript workspaces.
-- Pinned Bun 1.4.2 with isolated installs and compiler checks.
+- Migrated application, tests and tooling to strict TypeScript workspaces with CLI → proxy → core boundaries.
+- Pinned Bun 1.4.2 with isolated installs, native PTY screenshots, and Bun Docker/CI execution.
 
 ### Fixed
 - Transient retries prefer untried pool members.

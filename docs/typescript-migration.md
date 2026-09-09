@@ -20,10 +20,9 @@ TypeScript. Production packages declare every dependency they consume.
 ## Method
 
 Move one cohesive responsibility at a time, add real types, then run its compiler
-and behavioral tests. Temporary legacy adapters may re-export completed modules
-until consumers move; list their removal in the checklist. Do not call a mixed
-runtime stage complete. Keep existing Node checks during the transition until their
-Bun replacements prove the same behavior. No `allowJs` completion shortcut,
+and behavioral tests. Keep behavior covered when moving modules; remove obsolete adapters once all
+consumers use the package API. The migration removed the former Node entry points
+after Bun equivalents passed the same behavior checks. No `allowJs` completion shortcut,
 `@ts-nocheck`, implicit/explicit `any`, or relaxed strictness to clear errors.
 
 Prefer interfaces for contracts and functions for policy; retain classes where they
@@ -45,20 +44,18 @@ the registry's `latest` tag currently resolves to 22.20.2, which lacks declarati
 used by Bun. This is type compatibility, not a Node runtime requirement.
 `skipLibCheck` remains false. Recheck these pins when upgrading the toolchain.
 
-Errors, routing policy, retry classification and configuration validation now live
-in core. Atomic configuration persistence and retry timing live in proxy. Legacy
-`src` modules re-export package APIs temporarily; remove them as consumers migrate.
+## Current layout
 
-Account lifecycle, hot reload, token import/refresh, device authorization and OAuth
-callback handling now live in `packages/proxy`. Usage normalization and telemetry
-aggregation are pure core modules; reset reservations and history persistence remain
-in proxy. Browser launch/stdin/terminal presentation stay in CLI. Account identity
-checks across awaited refresh, imports and reset requests remain explicit; helper
-predicates re-read mutable state after awaits instead of trusting stale narrowing.
+Core owns errors, routing policy, retry classification, config validation and shared
+account/quota/telemetry contracts. Proxy owns atomic persistence, account lifecycle,
+auth protocols, reset reservations and HTTP handling. CLI owns command dispatch,
+service wiring, browser/stdin orchestration and terminal presentation.
 
-HTTP forwarding is split under `packages/proxy/src/http`: server admission,
-upstream attempts, stream delivery, payload inspection, rate-limit policy and logs.
-`apps/cli/src/tui` owns terminal lifecycle and typed views; `apps/cli/src/oauth.ts`
-owns browser/stdin orchestration. Routing spikes and panel tests now run in Bun.
-The root `src/index.js` remains temporary command/service wiring; Node deployment
-is still an intermediate state, not migration completion.
+All application code, tests, E2E harnesses, error generation and ESLint configuration
+are TypeScript. `apps/cli/src/index.ts` is the single Bun entry point. Docker and CI
+use the same pinned runtime. Shell/Python host integrations remain native.
+
+The TUI harness uses `Bun.Terminal`, checked against the pinned runtime's
+[implementation](https://github.com/oven-sh/bun/blob/bun-v1.4.2/src/runtime/api/bun/Terminal.rs)
+and [spawn tests](https://github.com/oven-sh/bun/blob/bun-v1.4.2/test/js/bun/terminal/terminal-spawn.test.ts).
+Screenshots render real PTY output through xterm in Chromium.

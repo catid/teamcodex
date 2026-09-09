@@ -8,7 +8,7 @@ Prerequisites:
 
 - **Mac:** install and start [Docker Desktop for Mac](https://docs.docker.com/desktop/setup/install/mac-install/), choosing the build for your processor.
 - **Ubuntu:** install `bubblewrap` for host Codex (`sudo apt install bubblewrap`), then install [Docker Engine and the Compose plugin](https://docs.docker.com/engine/install/ubuntu/). Configure Docker access for your regular user using Docker's [Linux post-install instructions](https://docs.docker.com/engine/install/linux-postinstall/), then sign in again if your group membership changed.
-- **Both:** Git, Bash, Python 3.9+ (for updates and the session picker), and a host installation of [Codex CLI](https://developers.openai.com/codex/cli/). The proxy image includes Node.js; a host Node.js installation is only needed if your Codex installation method requires it or you develop TeamCodex.
+- **Both:** Git, Bash, Python 3.9+ (for updates and the session picker), and a host installation of [Codex CLI](https://developers.openai.com/codex/cli/). The proxy image includes Bun. Native TeamCodex development uses Bun 1.4.2; a host Node.js installation is only needed if your Codex installation method requires it.
 
 Verify Docker before installing:
 
@@ -350,7 +350,7 @@ teamcodex build --pull
 teamcodex restart
 ```
 
-The image uses Node.js 24 and builds for the host architecture; it has no npm runtime dependencies. The container restarts when Docker restarts unless you explicitly stopped it. Enable Docker Desktop at login on macOS or the Docker service at boot on Ubuntu if you want automatic startup.
+The image uses Bun 1.4.2 and builds for the host architecture; runtime dependencies are internal workspaces. The container restarts when Docker restarts unless you explicitly stopped it. Enable Docker Desktop at login on macOS or the Docker service at boot on Ubuntu if you want automatic startup.
 
 To restore a backup, stop the proxy, copy the selected backup over `config.json`, ensure mode `600`, and start the proxy. To uninstall, run `teamcodex stop` and remove the launcher symlink. Host config, backups, and Codex credentials remain available until you explicitly remove them.
 
@@ -369,14 +369,14 @@ Use TeamCodex to launch sessions using its accounts. Independently running a nat
 
 ## Native development and TUI
 
-The Docker launcher is the normal installation. For development, use Node.js 22.13+ on the Node 22 line, or Node.js 24+:
+The Docker launcher is the normal installation. For development, use Bun 1.4.2 and run `bun install --frozen-lockfile`:
 
 ```bash
-node src/index.js init
-node src/index.js login --browser
-node src/index.js serve
+bun apps/cli/src/index.ts init
+bun apps/cli/src/index.ts login --browser
+bun apps/cli/src/index.ts serve
 # Another terminal:
-node src/index.js run --safe
+bun apps/cli/src/index.ts run --safe
 ```
 
 Native config defaults to `~/.config/teamcodex.json` or `$XDG_CONFIG_HOME/teamcodex.json`, overridden by `TEAMCODEX_CONFIG`. Native listening defaults to `127.0.0.1`. Native loopback clients are accepted without a proxy key; other connections require the key. Docker always requires it.
@@ -396,17 +396,16 @@ docker build -f test/Dockerfile.ubuntu -t teamcodex-test:ubuntu .
 docker run --rm teamcodex-test:ubuntu
 ```
 
-`bun run check` checks generated errors, strict types, ESLint, Knip, Bun workspace tests,
-and the remaining Node tests. Use Bun 1.4.2 for development; the runtime migration
-is tracked in [IMPLEMENTATION_CHECKLIST.md](IMPLEMENTATION_CHECKLIST.md).
+`bun run check` checks generated errors, strict types, ESLint, Knip and all Bun workspace tests.
+Migration verification is tracked in [IMPLEMENTATION_CHECKLIST.md](IMPLEMENTATION_CHECKLIST.md).
 The proxy depends only on internal workspaces at runtime.
 
 Application errors are centralized in [the error code table](docs/errors.md).
 Proxy-generated JSON errors include stable `code` and numeric `opcode` fields.
 
-Run `npm run test:e2e` for the isolated Docker/mock-provider integration suite.
+Run `bun run test:e2e` for the isolated Docker/mock-provider integration suite.
 See [Docker E2E coverage and requirements](docs/e2e.md).
-Run `npm run test:tui` for interactive mock TUI screenshots; the review gallery is
+Run `bun run test:tui` for interactive mock TUI screenshots; the review gallery is
 written to `artifacts/tui/index.html` (Chromium installation is described in the E2E guide).
 
 In the native TUI, press `u` for pool and account usage since proxy startup;
@@ -424,7 +423,7 @@ hands the terminal to the login flow and restores the dashboard afterward.
 Browser OAuth uses S256 PKCE; device authorization uses the provider-issued verifier
 at code exchange. API keys do not use PKCE. Docker login uses device authorization.
 
-Tests cover concurrent config writes, reset backups and permissions, account reload/removal during active requests, token-refresh races, 401/429 rotation, SSE framing, OAuth state checks, automatic usage-reset thresholds and credit availability, persisted cooldowns and idempotent retries, and literal argument handling through the native and Docker launchers. They use fake credentials and local upstream servers. CI runs Node.js 22 and 24 on macOS and Ubuntu, plus the Docker/Ubuntu test image.
+Tests cover concurrent config writes, reset backups and permissions, account reload/removal during active requests, token-refresh races, 401/429 rotation, SSE framing, OAuth state checks, automatic usage-reset thresholds and credit availability, persisted cooldowns and idempotent retries, and literal argument handling through the native and Docker launchers. They use fake credentials and local upstream servers. CI runs pinned Bun on macOS and Ubuntu, plus the Docker/Ubuntu test image.
 Statistics tests cover retry accounting, duplicate stream usage, in-flight disconnect cleanup, restart persistence, UTC bucket retention, damaged history, write recovery, and terminal layout at narrow and wide widths.
 
 Run Python helper tests with `python3 -m unittest discover -s test -p 'test_*.py'`.

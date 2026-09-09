@@ -30,7 +30,7 @@ services:
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      test: ["CMD", "node", "src/healthcheck.js"]
+      test: ["CMD", "bun", "packages/proxy/src/healthcheck.ts"]
       interval: 10s
       timeout: 5s
       start_period: 5s

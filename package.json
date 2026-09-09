@@ -3,26 +3,27 @@
   "version": "1.0.0",
   "description": "Multi-account Codex proxy with automatic quota-based rotation",
   "type": "module",
-  "main": "src/index.js",
+  "main": "apps/cli/src/index.ts",
   "bin": {
-    "teamcodex": "src/index.js"
+    "teamcodex": "apps/cli/src/index.ts"
   },
   "files": [
-    "src/"
+    "apps/cli/src/",
+    "packages/"
   ],
   "scripts": {
-    "start": "node src/index.js",
-    "test": "node --test test/*.test.js",
-    "lint": "eslint . --max-warnings 0",
-    "knip": "knip",
-    "check": "bun run errors:check && bun run typecheck && bun run lint && bun run knip && bun run test:core && bun run test:proxy && bun run test:cli && bun run test",
+    "start": "bun apps/cli/src/index.ts",
+    "test": "bun test packages/core/test packages/proxy/test apps/cli/test",
+    "lint": "bun node_modules/eslint/bin/eslint.js . --max-warnings 0",
+    "knip": "bun node_modules/knip/bin/knip.js",
+    "check": "bun run errors:check && bun run typecheck && bun run lint && bun run knip && bun test packages/core/test && bun test packages/proxy/test && bun test apps/cli/test",
     "errors:generate": "bun scripts/generate-errors.ts",
     "errors:check": "bun scripts/generate-errors.ts --check",
-    "test:e2e": "node --test e2e/docker.test.js",
-    "lint:fix": "eslint . --fix --max-warnings 0",
-    "test:tui": "node --test e2e/tui.test.js",
-    "test:oauth": "node --test e2e/oauth.test.js",
-    "test:coverage": "node --test --experimental-test-coverage test/*.test.js",
+    "test:e2e": "bun test e2e/docker.test.ts",
+    "lint:fix": "bun node_modules/eslint/bin/eslint.js . --fix --max-warnings 0",
+    "test:tui": "bun test e2e/tui.test.ts",
+    "test:oauth": "bun test e2e/oauth.test.ts",
+    "test:coverage": "bun test --coverage packages/core/test packages/proxy/test apps/cli/test",
     "typecheck": "tsc --build",
     "test:core": "bun test packages/core/test",
     "test:proxy": "bun test packages/proxy/test",
@@ -38,7 +39,7 @@
   ],
   "license": "MIT",
   "engines": {
-    "node": "^22.13.0 || >=24.0.0"
+    "bun": "1.4.2"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
@@ -47,7 +48,6 @@
     "eslint-plugin-simple-import-sort": "14.0.0",
     "globals": "17.12.0",
     "knip": "6.35.1",
-    "node-pty": "1.1.0",
     "playwright": "1.63.0",
     "typescript": "npm:@typescript/typescript6@6.0.2",
     "@types/bun": "1.4.2",
@@ -55,24 +55,17 @@
     "@typescript/native": "npm:typescript@7.0.2",
     "@types/node": "26.5.1"
   },
-  "allowScripts": {
-    "node-pty@1.1.0": true
-  },
   "private": true,
   "packageManager": "bun@1.4.2",
   "workspaces": [
     "packages/*",
     "apps/*"
   ],
-  "trustedDependencies": [
-    "node-pty"
-  ],
   "overrides": {
     "@types/node": "26.5.1"
   },
   "dependencies": {
     "@teamcodex/core": "workspace:*",
-    "@teamcodex/proxy": "workspace:*",
-    "@teamcodex/cli": "workspace:*"
+    "@teamcodex/proxy": "workspace:*"
   }
 }

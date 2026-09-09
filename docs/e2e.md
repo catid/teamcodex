@@ -1,17 +1,19 @@
 # Docker E2E tests
 
-Run `npm run test:e2e` with Node 22.13+ or 24+, Docker, and Docker Compose.
+Run `bun run test:e2e` with Bun 1.4.2, Docker, and Docker Compose.
 Run as a non-root user with Docker access. The suite builds the production image,
 resolves the production Compose configuration, and uses temporary config/auth
 folders and a uniquely named project. Cleanup removes its containers, network,
-temporary image, and fixtures, including after assertion failures.
+temporary image, and fixtures, including after assertion failures. Bun reports one
+lifecycle test containing 12 named, sequential scenarios; teardown has its own
+60-second timeout.
 
 The suite keeps production permissions, mounts, API-key enforcement, and healthcheck.
 It replaces the image name, port allocations, health polling interval, and upstreams
 for isolation. A mock service runs on an internal Docker network. Test requests run
-inside that network. A test-only Node preload redirects the fixed OAuth refresh URL
+inside that network. A test-only Bun preload redirects the fixed OAuth refresh URL
 to the mock and rejects unexpected fetch destinations. No real credentials are used.
-Image creation may download the public Node base image; provider traffic stays local.
+Image creation may download the public Bun base image; provider traffic stays local.
 
 Coverage includes non-root execution, read-only root filesystem, dropped capabilities,
 config/auth modes, health and authentication, CLI status/accounts/API, JSON/SSE
@@ -35,14 +37,12 @@ graceful shutdown followed by restart without losing configuration.
 
 This is mock integration coverage, not proof of current vendor API compatibility.
 It does not automate real browser/device consent, host Codex, or OS boot installation.
-The local test suite remains separate: `npm test` does not require Docker.
+The local test suite remains separate: `bun run test` does not require Docker.
 
 ## TUI screenshot review
 
 Run `bun install --frozen-lockfile`, `bunx playwright install chromium`, then `bun run test:tui`.
-Alternatively set `CHROMIUM_PATH` to an installed Chromium executable. `node-pty`
-requires its native install script (explicitly allowed in package.json); building
-from source requires Python and a C++ toolchain.
+Alternatively set `CHROMIUM_PATH` to an installed Chromium executable. The suite uses Bun's native PTY API; no Node-specific terminal addon is required.
 
 The native TeamCodex CLI runs inside a real 120×32 PTY. Its ANSI output is rendered
 by xterm.js in Chromium. Keyboard actions exercise selection, add/remove menus,
@@ -63,12 +63,11 @@ Review `artifacts/tui/index.html`, the PNG screenshots, and matching terminal te
 CI uploads these as `tui-review`, including partial captures when a test fails.
 Artifacts are ignored by Git. These are state assertions and review captures,
 not pixel-diff baselines; timing and the ephemeral proxy port can vary.
-Knip excludes `@xterm/xterm` from dependency reporting because the test loads its
-browser JavaScript and CSS assets by path instead of importing the Node module.
+The harness imports xterm types and loads its browser JavaScript and CSS assets by path.
 
 ## Offline CLI authentication
 
-Run `npm run test:oauth` separately from unit tests (both bind the registered
+Run `bun run test:oauth` separately from unit tests (both bind the registered
 loopback callback port 1455). Six scenarios spawn the real CLI with temporary
 configuration and a local mock issuer: browser S256 PKCE, device authorization
 with pending polling, API-key entry, wrong callback state, invalid token response,
@@ -79,5 +78,9 @@ fetch destinations; browser launchers are replaced with inert temporary commands
 No real provider credentials or approval are required. CI runs this on Linux and macOS.
 These mocks validate client behavior, not live provider acceptance.
 
-`npm run test:coverage` reports Node unit/integration coverage. It does not include
+`bun run test:coverage` reports Bun unit/integration coverage. It does not include
 Docker, browser rendering, or subprocess CLI execution in the parent coverage totals.
+
+Bun's native PTY harness sends `SIGWINCH` after resizing its terminal and waits
+for the expected menu before sending the next key. This preserves actual CLI
+input handling while avoiding assumptions about PTY packet boundaries.
