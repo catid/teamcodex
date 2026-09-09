@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { retryPolicy, TRANSIENT_STATUSES, isTransientError, retryDelay } from './retry.js';
 
 
 const HOP_BY_HOP_HEADERS = new Set([
@@ -30,11 +31,11 @@ export function createProxyServer(accountManager, config, hooks = {}) {
 
   const server = http.createServer(async (req, res) => {
     try {
-      // Auth check — skip for localhost connections
-      const clientKey = req.headers['x-api-key'];
+      // Native localhost is allowed; Docker requires the key on every connection.
+      const clientKey = req.headers['x-api-key'] || req.headers.authorization?.replace(/^Bearer /i, '');
       const remoteAddr = req.socket.remoteAddress;
       const isLocal = remoteAddr === '127.0.0.1' || remoteAddr === '::1' || remoteAddr === '::ffff:127.0.0.1';
-      if (proxyApiKey && clientKey !== proxyApiKey && !isLocal) {
+      if ((!proxyApiKey || clientKey !== proxyApiKey) && (!isLocal || process.env.TEAMCODEX_REQUIRE_API_KEY === '1')) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           error: { type: 'authentication_error', message: 'Invalid proxy API key' },
@@ -77,14 +78,21 @@ export function createProxyServer(accountManager, config, hooks = {}) {
 
       // Buffer request body (needed for retry on 429)
       const bodyChunks = [];
+      let requestSize = 0;
       for await (const chunk of req) {
+        requestSize += chunk.length;
+        if (requestSize > 32 * 1024 * 1024) {
+          res.writeHead(413, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: 'Request exceeds 32 MiB' } }));
+          return;
+        }
         bodyChunks.push(chunk);
       }
       const body = Buffer.concat(bodyChunks);
 
-      const ctx = { account: null, status: null };
+      const ctx = { account: null, status: null, networkRetries: 0, recovered: false, refreshed: new Set() };
       try {
-        await forwardRequest(req, res, body, accountManager, { upstream, apiUpstream }, 0, hooks, reqId, ctx, logDir);
+        await forwardRequest(req, res, body, accountManager, { upstream, apiUpstream, retry: retryPolicy(config) }, 0, hooks, reqId, ctx, logDir);
       } catch (err) {
         ctx.status = ctx.status || 502;
         console.error('[TeamCodex] Unhandled error:', err);
@@ -93,6 +101,8 @@ export function createProxyServer(accountManager, config, hooks = {}) {
           res.end(JSON.stringify({
             error: { type: 'proxy_error', message: 'Internal proxy error' },
           }));
+        } else {
+          res.destroy();
         }
       } finally {
         hooks.onRequestEnd?.(reqId, {
@@ -105,6 +115,8 @@ export function createProxyServer(accountManager, config, hooks = {}) {
     }
   });
 
+  server.requestTimeout = 30_000;
+  server.headersTimeout = 15_000;
   return server;
 }
 
@@ -138,18 +150,39 @@ function formatHeaders(headers) {
  * /responses path rewritten to the public API /v1/responses.
  */
 function buildUpstreamUrl(account, reqUrl, upstreams) {
-  if (account.type === 'apikey' && /\/responses(\?|$)/.test(reqUrl)) {
-    const qs = reqUrl.includes('?') ? reqUrl.slice(reqUrl.indexOf('?')) : '';
-    return `${upstreams.apiUpstream}/v1/responses${qs}`;
-  }
-  return `${upstreams.upstream}${reqUrl}`;
+  const base = (account.type === 'apikey' ? upstreams.apiUpstream : upstreams.upstream).replace(/\/$/, '');
+  const path = account.type === 'apikey'
+    ? reqUrl.replace(/^\/backend-api\/codex(?=\/|\?|$)/, '/v1').replace(/^\/responses(?=\/|\?|$)/, '/v1/responses')
+    : reqUrl;
+  return `${base}${path}`;
 }
 
 async function forwardRequest(req, res, body, accountManager, upstreams, retryCount, hooks, reqId, ctx, logDir) {
-  const maxRetries = accountManager.accounts.length;
+  const maxRetries = accountManager.accounts.length * 2;
 
-  // Select account
-  const account = accountManager.getActiveAccount();
+  if (res.destroyed || res.writableEnded) return;
+  // A bounded recovery check can return an account to service after a reset.
+  let account = accountManager.getActiveAccount();
+  if (!account && !ctx.recovered && hooks.onAccountsUnavailable) {
+    ctx.recovered = true;
+    let timer;
+    let onClose;
+    try {
+      await Promise.race([
+        Promise.resolve().then(() => hooks.onAccountsUnavailable()).catch(() => {}),
+        new Promise(resolve => {
+          timer = setTimeout(resolve, 5000);
+          onClose = resolve;
+          res.once('close', onClose);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+      res.removeListener('close', onClose);
+    }
+    if (res.destroyed) return;
+    account = accountManager.getActiveAccount();
+  }
   if (!account) {
     ctx.status = 429;
     ctx.account = '(none available)';
@@ -173,10 +206,12 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
   hooks.onRequestRouted?.(reqId, { account: account.name });
 
   // Refresh token if needed
-  await accountManager.ensureTokenFresh(account.index);
-  if (account.status === 'error' && retryCount < maxRetries) {
+  await accountManager.ensureTokenFresh(account);
+  if ((['error', 'throttled'].includes(account.status) || !accountManager.accounts.includes(account)) && retryCount < maxRetries) {
     return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir);
   }
+
+  if (res.destroyed) return;
 
   // Build upstream request headers
   const headers = {};
@@ -225,13 +260,34 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
     }
   }
 
+  const controller = new AbortController();
+  let timeout;
+  const armTimeout = seconds => {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => controller.abort(new globalThis.DOMException('upstream_timeout', 'TimeoutError')), seconds * 1000);
+    timeout.unref();
+  };
+  const touch = () => armTimeout(upstreams.retry.idleTimeoutSeconds);
+  const onDisconnect = () => controller.abort();
+  res.once('close', onDisconnect);
   try {
+    armTimeout(upstreams.retry.headerTimeoutSeconds);
     const upstreamRes = await fetch(upstreamUrl, {
+      signal: controller.signal,
       method,
       headers,
       body: ['GET', 'HEAD'].includes(method) ? undefined : body,
       redirect: 'manual',
     });
+
+    touch();
+    if (TRANSIENT_STATUSES.has(upstreamRes.status) && ctx.networkRetries < upstreams.retry.maxRetries) {
+      await upstreamRes.body?.cancel();
+      clearTimeout(timeout);
+      await retryDelay(ctx.networkRetries++, controller.signal);
+      accountManager.currentIndex = (account.index + 1) % Math.max(1, accountManager.accounts.length);
+      return forwardRequest(req, res, body, accountManager, upstreams, retryCount, hooks, reqId, ctx, logDir);
+    }
 
     // Extract rate limit headers
     const rateLimitHeaders = {};
@@ -240,7 +296,7 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
         rateLimitHeaders[key] = value;
       }
     }
-    accountManager.updateQuota(account.index, rateLimitHeaders);
+    accountManager.updateQuota(account, rateLimitHeaders);
 
     // 401: the account's credentials were rejected. For ChatGPT accounts try
     // a forced token refresh; if that can't produce a new token (revoked
@@ -249,16 +305,18 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
     // hammering the same dead credentials and surfacing the 401 to the client.
     if (upstreamRes.status === 401 && retryCount < maxRetries) {
       await upstreamRes.body?.cancel();
+      clearTimeout(timeout);
       if (logDir) logSections.push('=== RESPONSE 401 — forcing token refresh ===');
-      if (account.type === 'chatgpt' && account.refreshToken) {
+      if (account.type === 'chatgpt' && account.refreshToken && !ctx.refreshed.has(account)) {
+        ctx.refreshed.add(account);
         console.log(`[TeamCodex] 401 on "${account.name}" — forcing token refresh`);
         const prevCredential = account.credential;
-        await accountManager.ensureTokenFresh(account.index, true);
-        if (account.credential === prevCredential && account.status !== 'error') {
-          accountManager.markAuthFailed(account.index);
+        await accountManager.ensureTokenFresh(account, true);
+        if (account.credential === prevCredential && account.status === 'active') {
+          accountManager.markAuthFailed(account);
         }
       } else {
-        accountManager.markAuthFailed(account.index);
+        accountManager.markAuthFailed(account);
       }
       return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir);
     }
@@ -271,20 +329,13 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
     // without ever switching, so it keeps hammering the same throttled account
     // and exhausts its own retries ("exceeded retry limit, last status: 429").
     if (upstreamRes.status === 429) {
-      const retryAfterHdr = parseInt(upstreamRes.headers.get('retry-after'), 10);
+      const retryAfterHdr = parseRetryAfter(upstreamRes.headers.get('retry-after'));
       await upstreamRes.body?.cancel();
 
-      const resetAt = rateLimitHeaders['x-codex-primary-reset-at']
-        ? parseFloat(rateLimitHeaders['x-codex-primary-reset-at']) * 1000
-        : null;
-      const waitSecs = !isNaN(retryAfterHdr)
-        ? retryAfterHdr
-        : resetAt
-          ? Math.max(0, Math.ceil((resetAt - Date.now()) / 1000))
-          : null;
+      const waitSecs = retryAfterHdr ?? computeAccountRetryAfter(account, DEFAULT_429_BACKOFF_SECONDS);
       const backoffSecs = Math.max(1, waitSecs ?? DEFAULT_429_BACKOFF_SECONDS);
 
-      accountManager.markRateLimited(account.index, backoffSecs);
+      accountManager.markRateLimited(account, backoffSecs);
       if (logDir) {
         logSections.push(`=== RESPONSE 429 — backoff ${backoffSecs}s, switching account ===\n${formatHeaders(upstreamRes.headers)}`);
         writeRequestLog(logDir, reqId, logSections);
@@ -332,7 +383,7 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
 
     if (isStreaming) {
       const streamLog = logDir ? [] : null;
-      const streamResult = await streamResponse(upstreamRes.body, res, upstreamRes.status, responseHeaders, account.index, accountManager, streamLog);
+      const streamResult = await streamResponse(upstreamRes.body, res, upstreamRes.status, responseHeaders, account, accountManager, streamLog, touch, controller.signal);
       if (logDir) {
         logSections.push(`=== RESPONSE BODY (streamed) ===\n${streamLog.join('')}`);
         writeRequestLog(logDir, reqId, logSections);
@@ -349,8 +400,16 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
       }
       ctx.status = upstreamRes.status;
     } else {
-      const buf = Buffer.from(await upstreamRes.arrayBuffer());
-      const bodyResult = inspectResponseBody(buf, account.index, accountManager);
+      const chunks = [];
+      let size = 0;
+      for await (const chunk of upstreamRes.body) {
+        touch();
+        size += chunk.length;
+        if (size > 32 * 1024 * 1024) throw new Error('Upstream response exceeds 32 MiB');
+        chunks.push(chunk);
+      }
+      const buf = Buffer.concat(chunks);
+      const bodyResult = inspectResponseBody(buf, account, accountManager);
       if (logDir) {
         try {
           logSections.push(`=== RESPONSE BODY ===\n${JSON.stringify(JSON.parse(buf.toString()), null, 2)}`);
@@ -371,6 +430,7 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
       res.end(buf);
     }
   } catch (err) {
+    if (res.destroyed) return;
     console.error(`[TeamCodex] Upstream error (account "${account.name}"):`, err.message);
 
     if (logDir) {
@@ -378,20 +438,20 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
       writeRequestLog(logDir, reqId, logSections);
     }
 
-    const isTransient = err instanceof Error &&
-      (err.message.includes('fetch failed') ||
-        err.code === 'ECONNRESET' || err.code === 'ECONNREFUSED' ||
-        err.code === 'ETIMEDOUT' || err.code === 'UND_ERR_CONNECT_TIMEOUT');
-
-    // Transient network errors: just close the connection and let the client retry
-    if (isTransient) {
-      res.destroy();
-      return;
-    }
-
-    if (retryCount < maxRetries && !res.headersSent) {
-      account.status = 'error';
-      return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir);
+    // Never replay a partially delivered response, or disable healthy credentials
+    // because a connection failed. The next client request can reuse the account.
+    if (!res.headersSent && isTransientError(err) && ctx.networkRetries < upstreams.retry.maxRetries) {
+      clearTimeout(timeout);
+      // The attempt's signal may already have timed out; the delay has its own
+      // disconnect cancellation, and the next attempt gets a fresh deadline.
+      const waiting = new AbortController();
+      const cancel = () => waiting.abort();
+      res.once('close', cancel);
+      try { await retryDelay(ctx.networkRetries++, waiting.signal); }
+      catch { return; }
+      finally { res.removeListener('close', cancel); }
+      accountManager.currentIndex = (account.index + 1) % Math.max(1, accountManager.accounts.length);
+      return forwardRequest(req, res, body, accountManager, upstreams, retryCount, hooks, reqId, ctx, logDir);
     }
     ctx.status = 502;
 
@@ -400,14 +460,19 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
       res.end(JSON.stringify({
         error: { type: 'proxy_error', message: `Upstream error: ${err.message}` },
       }));
+    } else {
+      res.destroy();
     }
+  } finally {
+    clearTimeout(timeout);
+    res.removeListener('close', onDisconnect);
   }
 }
 
 /**
  * Stream an SSE response to the client, parsing usage data along the way.
  */
-async function streamResponse(webStream, res, status, headers, accountIndex, accountManager, streamLog) {
+async function streamResponse(webStream, res, status, headers, accountIndex, accountManager, streamLog, touch, signal) {
   const reader = webStream.getReader();
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
@@ -415,11 +480,14 @@ async function streamResponse(webStream, res, status, headers, accountIndex, acc
   const streamState = { embedded429Seen: false };
   let bytesSent = false;
   let shouldEnd = true;
+  const onClose = () => { reader.cancel().catch(() => {}); };
+  res.once('close', onClose);
 
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      touch();
 
       // Client disconnected — stop reading from upstream
       if (res.destroyed) break;
@@ -431,8 +499,11 @@ async function streamResponse(webStream, res, status, headers, accountIndex, acc
 
       // Parse SSE events for usage and embedded rate-limit failures
       sseBuffer += text;
-      const events = sseBuffer.split('\n\n');
+      const events = sseBuffer.split(/\r?\n\r?\n/);
       sseBuffer = events.pop(); // keep incomplete event
+      if (sseBuffer.length > 1024 * 1024 || events.some(event => event.length > 1024 * 1024)) {
+        throw new Error('SSE event buffer exceeds 1 MiB');
+      }
 
       for (const event of events) {
         const eventText = `${event}\n\n`;
@@ -453,6 +524,7 @@ async function streamResponse(webStream, res, status, headers, accountIndex, acc
       }
     }
 
+    if (!bytesSent && !sseBuffer && !res.destroyed) throw new Error('Upstream stream terminated before any events');
     const trailing = decoder.decode();
     if (trailing) {
       sseBuffer += trailing;
@@ -472,7 +544,12 @@ async function streamResponse(webStream, res, status, headers, accountIndex, acc
     }
 
     return { embedded429: false, bytesSent };
+  } catch (err) {
+    shouldEnd = false;
+    if (res.headersSent) res.destroy();
+    throw err;
   } finally {
+    res.removeListener('close', onClose);
     // Cancel upstream reader to stop consuming data nobody needs
     reader.cancel().catch(() => {});
     if (shouldEnd && !res.writableEnded && !res.destroyed) {
@@ -495,9 +572,19 @@ async function streamResponse(webStream, res, status, headers, accountIndex, acc
     // Handle backpressure — also bail out if client disconnects,
     // because 'drain' will never fire on a destroyed socket
     if (!ok) {
-      await new Promise(resolve => {
-        res.once('drain', resolve);
-        res.once('close', resolve);
+      await new Promise((resolve, reject) => {
+        const onAbort = () => { reject(signal.reason); finish(); };
+        const finish = () => {
+          res.removeListener('drain', finish);
+          res.removeListener('close', finish);
+          signal.removeEventListener('abort', onAbort);
+          resolve();
+        };
+        res.once('drain', finish);
+        res.once('close', finish);
+        signal.addEventListener('abort', onAbort, { once: true });
+        if (signal.aborted) onAbort();
+        if (res.destroyed) finish();
       });
     }
 
@@ -507,8 +594,8 @@ async function streamResponse(webStream, res, status, headers, accountIndex, acc
 
 function inspectSSEEvent(event, accountIndex, accountManager, state) {
   const dataLines = event.split('\n')
-    .filter(l => l.startsWith('data: '))
-    .map(l => l.slice(6));
+    .filter(l => l.startsWith('data:'))
+    .map(l => l.slice(5).replace(/^ /, '').replace(/\r$/, ''));
   if (dataLines.length === 0) return { embedded429: false };
 
   try {
@@ -616,7 +703,7 @@ function errorDetailsToText(value) {
 }
 
 function markEmbedded429(accountIndex, accountManager) {
-  const account = accountManager.accounts[accountIndex];
+  const account = accountManager._resolveAccount(accountIndex);
   if (!account) return;
 
   const retryAfter = computeAccountRetryAfter(account, DEFAULT_EMBEDDED_429_RETRY_SECONDS);
@@ -663,4 +750,12 @@ function computeRetryAfter(accounts) {
     }
   }
   return soonest === Infinity ? 60 : Math.max(1, Math.ceil(soonest / 1000));
+}
+
+function parseRetryAfter(value) {
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds);
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(0, Math.ceil((date - Date.now()) / 1000)) : null;
 }

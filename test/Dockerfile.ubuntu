@@ -1,0 +1,10 @@
+FROM node:24-bookworm-slim AS node
+FROM ubuntu:24.04
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+WORKDIR /workspace
+COPY package.json ./
+COPY src/ ./src/
+COPY test/ ./test/
+COPY teamcodex.sh ./
+USER ubuntu
+CMD ["node", "--test"]

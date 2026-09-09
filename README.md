@@ -1,230 +1,332 @@
 # TeamCodex
 
-Multi-account Codex proxy with automatic quota-based rotation for [OpenAI Codex CLI](https://developers.openai.com/codex/cli/).
+A multi-account proxy for Codex CLI, with quota tracking, automatic account rotation, and OAuth token refresh. The proxy runs in Docker on Ubuntu Linux and macOS, including Apple Silicon MacBooks. Codex runs on the host and retains access to your working directory.
 
-Sits transparently between Codex and the ChatGPT backend, managing multiple ChatGPT (Plus/Pro/Team) accounts and automatically switching when one approaches its 5-hour or weekly usage limit.
+## Install with Docker
 
-## Features
+Prerequisites:
 
-- **Automatic account rotation** — switches to the next account when the 5h or weekly usage window reaches the configured threshold (default 98%)
-- **Smart 429 handling** — 429 responses and embedded retry-limit failures mark the current account throttled and switch accounts immediately
-- **Interactive TUI** — real-time dashboard with color-coded quota bars, reset countdowns, activity log, and keyboard controls
-- **OAuth token management** — automatically refreshes tokens nearing expiry and persists them to config
-- **Hot-reload accounts** — `login`, `import`, and `remove` update a running server immediately (no restart; **R** in the TUI also re-syncs)
-- **Account deduplication** — detects duplicate accounts by ChatGPT account id and keeps the most recent
-- **Request logging** — optional full request/response logging for debugging
-- **Zero dependencies** — uses only Node.js built-in modules
+- **Mac:** install and start [Docker Desktop for Mac](https://docs.docker.com/desktop/setup/install/mac-install/), choosing the build for your processor.
+- **Ubuntu:** install [Docker Engine and the Compose plugin](https://docs.docker.com/engine/install/ubuntu/). Configure Docker access for your regular user using Docker's [Linux post-install instructions](https://docs.docker.com/engine/install/linux-postinstall/), then sign in again if your group membership changed.
+- **Both:** Git, Bash, and a host installation of [Codex CLI](https://developers.openai.com/codex/cli/). The proxy image includes Node.js; a host Node.js installation is only needed if your Codex installation method requires it or you develop TeamCodex.
 
-## Quick Start
-
-Requires Node.js 18+ and the Codex CLI (`npm install -g @openai/codex`).
+Verify Docker before installing:
 
 ```bash
-# Install
-npm install -g teamcodex
+docker info
+docker compose version
 
-# Add your first account (opens browser for ChatGPT OAuth)
+git clone https://github.com/catid/teamcodex.git
+cd teamcodex
+./install.sh
+```
+
+The installer builds this checkout, initializes configuration, imports an existing Codex `auth.json` when no accounts are configured, and links the Docker launcher into `~/.local/bin/teamcodex`. Run the installer as your regular user so config ownership matches the container user.
+
+If `~/.local/bin` is missing from your PATH, add this line to `~/.zshrc` on a typical Mac or `~/.bashrc` on a typical Ubuntu installation, then open a new terminal:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+You can always use `./teamcodex.sh` from this checkout. Keep the checkout in place: the installed launcher points to it. No nested TeamCodex checkout, global npm installation, or tmux session is required.
+
+If no credentials were imported, add an account:
+
+```bash
+./teamcodex.sh login --device-auth
+```
+
+Start the proxy and run Codex:
+
+```bash
+./teamcodex.sh serve
+./teamcodex.sh status
+./teamcodex.sh run
+```
+
+`serve` starts the container in the background and waits for its health check. `run` also starts the container if necessary, then launches host Codex in your current directory. Docker publishes the proxy at `http://127.0.0.1:1456` and requires its generated proxy key on every request.
+
+`teamcodex run` retains the existing behavior of adding `--dangerously-bypass-approvals-and-sandbox`. Use `teamcodex run --safe` to let Codex use its own approval and sandbox settings. Docker isolates the proxy; Codex's commands execute on the host.
+
+## Accounts and login
+
+Add each account that should participate in rotation:
+
+```bash
+teamcodex login --device-auth --name personal
+teamcodex login --device-auth --name work
+teamcodex accounts
+teamcodex status
+```
+
+Sign into a different ChatGPT account for each login. If the browser has kept the previous account signed in, switch accounts there before authorizing. Re-authorizing the same account updates it. Every configured account participates in rotation immediately; no service restart is needed.
+
+### Device authorization
+
+Docker login uses device authorization on both operating systems:
+
+```bash
 teamcodex login
+teamcodex login --device-auth --name secondary
+```
 
-# Add a second account
-teamcodex login
+Open the printed URL in any browser, enter the one-time code, and complete sign-in. The command waits up to 15 minutes. No browser callback port or display server is needed. `--browser` is available only with the native development CLI.
 
-# Start the proxy
+### Import existing Codex credentials
+
+```bash
+codex login
+teamcodex import
+teamcodex accounts -v
+```
+
+The launcher mounts `$CODEX_HOME` (default `~/.codex`) at `/codex`, so `import` reads `/codex/auth.json`. File-based ChatGPT credentials are required for import; if your Codex installation uses an OS credential store, use device authorization instead.
+
+An explicit `--from` path must exist **inside** the container:
+
+```bash
+teamcodex import --from /codex/another-auth.json --name secondary
+```
+
+Importing or logging into an existing account updates its entry by account ID, then by name. `login`, `import`, and `remove` notify the running container to reload accounts immediately. `accounts` lists local metadata without rotating tokens or modifying config.
+
+### API key accounts
+
+```bash
+teamcodex login --api --name api-fallback
+```
+
+API key support is experimental and uses your OpenAI platform account. The proxy rewrites `/backend-api/codex/...` to `/v1/...` for API accounts, including `/responses` and `/responses/compact`. Model access and request compatibility depend on your API account. Use ChatGPT accounts for subscription access.
+
+## Automatic earned usage resets
+
+TeamCodex checks every ChatGPT account at startup and every five minutes, including accounts currently waiting for their usage limits to reset. It reads the provider's usage windows and available **earned reset credits**. At or above 98% usage in the most-used reported window, an account with a confirmed available credit automatically redeems one. Accounts require a known ChatGPT account ID for automatic redemption; `login` and normal Codex imports populate it.
+
+This implements the provider contract inspected in [Bifrost's ChatGPT reset controller](https://github.com/c0ldfront/bifrost/blob/fa8ee27/deploy/oauth/pi-account.mjs) and its [reset policies](https://github.com/c0ldfront/bifrost/blob/fa8ee27/plugins/oauthprovider/README.md). TeamCodex uses a threshold for each account, fitting its account rotation model.
+
+The defaults are enabled, including when an older config omits this section:
+
+```json
+"autoReset": {
+  "enabled": true,
+  "threshold": 0.98,
+  "pollIntervalSeconds": 300
+}
+```
+
+Set `enabled` to `false` to disable automatic redemption, or change the threshold from `0.01` to `1`. The polling interval can be 30–3600 seconds. Restart the service after editing settings. Usage monitoring continues when redemption is disabled, so quota and available-credit information remains visible in `teamcodex status`.
+
+Only credits explicitly reported as available can initiate a new redemption. Missing availability remains **unknown**, and the proxy does not purchase credits. There is at most one new logical redemption per account per hour, including unsuccessful outcomes. Transient HTTP and network failures get two bounded retries with the same ID; uncertain redemptions are checked again after one minute using that ID. The cooldown and any pending redemption ID are stored in `usageResetState` in config and survive restarts, upgrades, account renaming, and `teamcodex reset`. Preserve this generated state when editing config.
+
+The provider chooses which usage windows a credit restores. `reset` and `already_redeemed` outcomes require a fresh usage read before TeamCodex reports completion or reactivates a throttled account. `no_credit` and `nothing_to_reset` are unsuccessful outcomes. After a timeout, unknown outcome, or failed usage refresh, retries reuse the same persisted ID—even if the last credit has already been consumed—to avoid spending another credit for the same attempt. A completed reset that still reports exhausted usage does not reactivate the account.
+
+```bash
+teamcodex status  # Available credits and last automatic reset result
+teamcodex logs   # Automatic usage reset events
+```
+
+## Retries and task recovery
+
+The proxy retries transient connection errors, response timeouts, and HTTP 408/500/502/503/504 up to twice, switching accounts between attempts. HTTP 401 gets one token refresh per account before rotation; HTTP 429 and embedded rate-limit errors immediately rotate through the available pool. Request bodies and any supplied idempotency key are preserved. Transient token-refresh outages temporarily back off an account and allow recovery instead of permanently disabling it.
+
+```json
+"retry": { "maxRetries": 2, "headerTimeoutSeconds": 60, "idleTimeoutSeconds": 120 }
+```
+
+Each attempt waits at most 60 seconds for headers and 120 seconds between response chunks. Active streams can run longer; activity renews the idle deadline. A stalled connection is aborted. Retries only occur before any response reaches the client. If a stream fails after output begins, the proxy closes it so Codex can handle recovery without the proxy replaying partial output. A retry before output can still repeat provider work if the provider accepted the earlier request but its response was lost.
+
+When every account is unavailable, the proxy allows up to five seconds for a coalesced usage/reset recovery check, then returns a bounded response with `Retry-After`. Usage polling handles three accounts concurrently so one slow account does not block the whole pool. Fresh reduced usage can restore a throttled account. Request and buffered response bodies are limited to 32 MiB; individual SSE events to 1 MiB. Retry counts can be 0–5, timeouts 1–600 seconds. Restart after editing settings.
+
+## Commands
+
+| Command | Behavior |
+| --- | --- |
+| `teamcodex build` | Build the Docker image from this checkout |
+| `teamcodex serve` | Start in the background and wait for health; aliases: `start`, `server` |
+| `teamcodex stop` | Stop and remove the container and Compose network; retain host config |
+| `teamcodex restart` | Recreate the container and wait for health |
+| `teamcodex logs` | Follow recent proxy logs; Ctrl-C stops following |
+| `teamcodex ps` | Show container state and health |
+| `teamcodex smoke [--model MODEL]` | Send a live hello through the running service (uses model tokens) |
+| `teamcodex smoke --rotate` | Start an isolated diagnostic on the second account, inject a 429, and verify rotation followed by a real hello; does not alter live pool state |
+| `teamcodex status` | Show live account, quota, and request statistics |
+| `teamcodex init` | Create config; import host Codex credentials if accounts are empty |
+| `teamcodex login` | Add or update an account using device authorization |
+| `teamcodex import` | Import a Codex credential file |
+| `teamcodex accounts [-v]` | List configured accounts and optionally token expiry |
+| `teamcodex remove NAME` | Remove an account and reload the server |
+| `teamcodex reset` | Stop the server, back up config, reset settings and proxy key, retain accounts |
+| `teamcodex run [--safe] [ARGS...]` | Run host Codex through the proxy |
+| `teamcodex env` | Print a shell command for host Codex, including the proxy key |
+| `teamcodex api PATH` | Call an upstream endpoint directly with a configured account |
+| `teamcodex help` | Show command help |
+
+Arguments pass through to Codex without shell evaluation:
+
+```bash
+teamcodex run resume
+teamcodex run resume --last
+teamcodex run "fix the tests"
+teamcodex run --safe exec "explain this repository"
+```
+
+The `env` output is a complete, shell-quoted command to copy and run. It contains a credential; avoid sharing it. The old `codex $(teamcodex env ...)` invocation is no longer valid. Prefer `teamcodex run`.
+
+For upstream diagnostics:
+
+```bash
+teamcodex api /backend-api/wham/usage --account secondary
+teamcodex api /v1/models --account api-fallback
+```
+
+`api` also accepts `--method POST` and `--data JSON`. It bypasses proxy rotation and uses the selected account's stored credentials.
+
+## Configuration and persistence
+
+Docker stores configuration at `~/.config/teamcodex/config.json`, or `$XDG_CONFIG_HOME/teamcodex/config.json`. The directory is mounted into the container, so atomic file replacement, account updates, and backups survive container restarts and upgrades. Config and backup files use owner-only permissions.
+
+| Environment variable | Default | Purpose |
+| --- | --- | --- |
+| `TEAMCODEX_CONFIG_DIR` | `$XDG_CONFIG_HOME/teamcodex` or `~/.config/teamcodex` | Host directory containing `config.json` and backups |
+| `TEAMCODEX_CODEX_HOME` | `$CODEX_HOME` or `~/.codex` | Host Codex auth directory mounted at `/codex` |
+| `TEAMCODEX_PORT` | `1456` | Published host port and Codex proxy URL |
+| `TEAMCODEX_BIN_DIR` | `~/.local/bin` | Launcher installation directory, used by `install.sh` |
+
+Set custom variables consistently for installation and subsequent commands, for example in your shell profile:
+
+```bash
+export TEAMCODEX_CONFIG_DIR="$HOME/.config/teamcodex-work"
+export TEAMCODEX_PORT=2456
+./install.sh
 teamcodex serve
-
-# In another terminal, run Codex through the proxy
-teamcodex run
 ```
 
-You can also import existing Codex CLI credentials instead of logging in:
+The launcher sets the container UID and GID to those of the host user. This allows writes to mounted config on Ubuntu and macOS without root-owned files. The Compose project is named `teamcodex`; these settings relocate a single installation, rather than creating independent concurrent instances. Use environment exports with the launcher; a repository `.env` file is not its configuration interface.
 
-```bash
-codex login            # Log into an account in Codex
-teamcodex import       # Import its credentials
-```
-
-## Adding Accounts
-
-### OAuth Login (recommended)
-
-The easiest way to add accounts — opens your browser for authentication:
-
-```bash
-teamcodex login
-```
-
-Uses the same OAuth flow as the Codex CLI. Auto-detects the account email and plan type (Plus/Pro/Team). Logging in with the same account again updates its credentials.
-
-You can add or replace accounts while the server is running — it picks up the change immediately (no restart needed).
-
-> Note: the browser callback uses port 1455 (the only redirect the Codex OAuth client allows), so close any concurrent `codex login` first.
-
-### Headless servers (device-code login)
-
-On a headless box the browser callback (`http://localhost:1455`) is unreachable from your laptop, so `teamcodex login` automatically falls back to the **device-code flow** (RFC 8628) when no display is detected. You can also request it explicitly:
-
-```bash
-teamcodex login --device-auth
-```
-
-It prints a one-time code and a URL:
-
-```
-  1. On any device, open:
-       https://auth.openai.com/codex/device
-  2. Enter this one-time code (expires in 15 min):
-       JA4B-E6L6R
-```
-
-Open the URL on your laptop or phone, sign in, enter the code, and the server completes the login automatically — no port forwarding required. Force the browser flow instead with `teamcodex login --browser`.
-
-### Import from Codex CLI
-
-If you already have Codex set up, import its credentials directly:
-
-```bash
-codex login            # Log into an account in Codex
-teamcodex import       # Import its credentials
-```
-
-Re-importing the same account updates its credentials. You can also import from a custom path:
-
-```bash
-teamcodex import --from /path/to/auth.json
-```
-
-### API Key (experimental)
-
-For OpenAI API key accounts (billed via the platform):
-
-```bash
-teamcodex login --api
-```
-
-When an API key account is active, the proxy rewrites Codex's `/responses` calls to the public `api.openai.com/v1/responses` endpoint. Model availability and request compatibility depend on your API access.
-
-## Usage
-
-### Start the proxy server
-
-```bash
-teamcodex serve
-```
-
-When running from a TTY, shows an interactive TUI with:
-- Account table with 5h/weekly quota progress bars and reset countdowns
-- Real-time activity log with request tracking
-- Keyboard shortcuts (see below)
-
-Falls back to plain log output when not a TTY (e.g. running as a service).
-
-#### TUI Keyboard Shortcuts
-
-| Key | Action |
-|-----|--------|
-| `s` | Switch active account |
-| `a` | Add account (import or API key) |
-| `r` | Remove an account |
-| `R` | Reload accounts from config |
-| `q` | Quit |
-
-In selection mode, use `j`/`k` or arrow keys to navigate, `Enter` to confirm, `Esc` to cancel.
-
-### Run Codex through the proxy
-
-```bash
-teamcodex run
-```
-
-`teamcodex run` starts Codex with `--dangerously-bypass-approvals-and-sandbox` (pass `--safe` to skip that). All other arguments pass through to Codex:
-
-```bash
-teamcodex run resume            # resume a previous session (picker)
-teamcodex run resume --last     # continue the most recent session
-teamcodex run "fix the tests"   # start with a prompt
-teamcodex run exec "do thing"   # non-interactive exec mode
-```
-
-Or apply the config overrides manually:
-
-```bash
-codex $(teamcodex env | tr -d '\\')
-```
-
-### Other commands
-
-```bash
-teamcodex accounts          # List accounts with plan type
-teamcodex accounts -v       # Also show token expiry times
-teamcodex status            # Show live proxy status (requires running server)
-teamcodex remove <name>     # Remove an account
-teamcodex api <path>        # Call an API endpoint with account credentials
-teamcodex help              # Show all commands
-```
-
-### Request logging
-
-Log full request/response details to a directory (one file per request):
-
-```bash
-teamcodex serve --log-to /tmp/requests
-```
-
-## Configuration
-
-Config is stored at `~/.config/teamcodex.json` (or `$XDG_CONFIG_HOME/teamcodex.json`). A random proxy API key is generated on first use.
-
-Override the config path with `TEAMCODEX_CONFIG`:
-
-```bash
-TEAMCODEX_CONFIG=./my-config.json teamcodex serve
-```
-
-### Config format
+Generated config looks like this; the real key is randomly generated:
 
 ```json
 {
   "proxy": {
+    "host": "127.0.0.1",
     "port": 1456,
-    "apiKey": "tcx-auto-generated-key"
+    "apiKey": "tcx-generated-secret"
   },
   "upstream": "https://chatgpt.com",
   "apiUpstream": "https://api.openai.com",
   "switchThreshold": 0.98,
-  "accounts": [
-    {
-      "name": "user@example.com",
-      "type": "chatgpt",
-      "accountId": "...",
-      "planType": "pro",
-      "accessToken": "eyJ...",
-      "refreshToken": "rt.1...",
-      "idToken": "eyJ...",
-      "expiresAt": 1781933846000
-    }
-  ]
+  "autoReset": { "enabled": true, "threshold": 0.98, "pollIntervalSeconds": 300 },
+  "accounts": []
 }
 ```
 
-| Field | Description |
-|-------|-------------|
-| `proxy.port` | Local port the proxy listens on |
-| `proxy.apiKey` | API key remote clients use to authenticate with the proxy (localhost is always allowed) |
-| `upstream` | ChatGPT backend base URL |
-| `apiUpstream` | OpenAI platform API base URL (API key accounts) |
-| `switchThreshold` | Quota utilization (0–1) at which to switch accounts |
+See [config.example.json](config.example.json) for an import-based account example. Run the installer or `init` to generate a unique key instead of copying the example key into service.
 
-## How It Works
+| JSON field | Meaning |
+| --- | --- |
+| `proxy.host`, `proxy.port` | Native listening address; Docker overrides these to `0.0.0.0:1456` inside the container |
+| `proxy.apiKey` | Proxy credential accepted via bearer authorization or `x-api-key` |
+| `upstream` | ChatGPT backend origin |
+| `apiUpstream` | OpenAI platform API origin |
+| `switchThreshold` | Quota utilization from 0 to 1 at which rotation prefers another account |
+| `retry` | Bounded transient retries and response header/idle timeouts; see task recovery above |
+| `autoReset` | Automatic earned-credit redemption policy; defaults to enabled at 98%, polling every five minutes |
+| `usageResetState` | Generated per-account cooldowns and pending redemption IDs; preserve when editing config |
+| `accounts` | Named `chatgpt` or `apikey` entries |
 
-1. `teamcodex run` starts Codex with a custom model provider pointing at the local proxy (`-c model_providers.teamcodex.base_url=http://127.0.0.1:1456/backend-api/codex -c model_providers.teamcodex.requires_openai_auth=true`), plus `chatgpt_base_url` for auxiliary endpoints
-2. The proxy selects the active account and replaces the `Authorization` and `chatgpt-account-id` headers with that account's credentials
-3. Tokens expiring within 5 minutes are automatically refreshed against `auth.openai.com` and persisted to config
-4. Rate limit headers from the backend (`x-codex-primary-*` = 5h window, `x-codex-secondary-*` = weekly window) track quota utilization per account
-5. When usage reaches the threshold, the proxy switches to the next available account via round-robin
-6. On 429 responses or embedded retry-limit failures, the proxy marks the current account throttled until its reset hint (or a fallback backoff) and switches immediately
-7. Transient network errors (connection reset, timeout) drop the connection so the client can retry
-8. If all accounts are exhausted, returns 429 with the soonest reset time
-9. Codex manages its own token lifecycle independently (refreshes go directly to `auth.openai.com`); the proxy swaps credentials in-flight, so what Codex stores never matters
+ChatGPT entries store `accessToken`, `refreshToken`, `idToken`, `accountId`, `expiresAt` (milliseconds), and optional `planType` and `source`. An `importFrom` entry loads its credential file if stored credentials are absent. API entries store `apiKey`. Files referred to by `importFrom` must be available inside Docker; `~/.codex/auth.json` maps to the mounted Codex auth directory.
+
+Account changes hot-reload. Changes to proxy keys, origins, thresholds, or automatic-reset settings require `teamcodex restart`. Change Docker's host port through `TEAMCODEX_PORT`.
+
+### Reset and migrate an installation
+
+```bash
+# Reset installation settings, preserve accounts, and create a backup if config exists
+./install.sh --reset
+teamcodex serve
+```
+
+Or reset an already installed system:
+
+```bash
+teamcodex reset
+teamcodex serve
+```
+
+Reset restores default proxy settings and generates a new proxy key. Existing `run` sessions using the old key need restarting. Backups are named `config.json.backup-<timestamp>-<random>` beside the live config. Malformed JSON is backed up before generating a fresh config; existing valid account lists are retained.
+
+On the first Docker installation, `install.sh` copies an existing native config from `$TEAMCODEX_CONFIG` or `~/.config/teamcodex.json` if the Docker config does not already exist. The old file is retained. The launcher is named `teamcodex.sh` in the checkout so it can coexist with a `teamcodex/` directory created by the older installer. Stop a native proxy or old tmux server before starting Docker on the same port. `TEAMCODEX_CONFIG` is a native file-path override and a migration source; use `TEAMCODEX_CONFIG_DIR` for Docker.
+
+The legacy `install-team-repos.sh` and `run-team-servers.sh` scripts now delegate to this Docker installation and startup. They manage TeamCodex only; existing TeamClaude installations are managed separately.
+
+### Upgrade, backups, and removal
+
+```bash
+git pull --ff-only
+teamcodex build --pull
+teamcodex restart
+```
+
+The image uses Node.js 24 and builds for the host architecture; it has no npm runtime dependencies. The container restarts when Docker restarts unless you explicitly stopped it. Enable Docker Desktop at login on macOS or the Docker service at boot on Ubuntu if you want automatic startup.
+
+To restore a backup, stop the proxy, copy the selected backup over `config.json`, ensure mode `600`, and start the proxy. To uninstall, run `teamcodex stop` and remove the launcher symlink. Host config, backups, and Codex credentials remain available until you explicitly remove them.
+
+## How requests work
+
+1. The launcher gives host Codex a custom provider pointing to the local Docker port and supplies `TEAMCODEX_API_KEY` in its environment. It uses the documented [Codex provider settings](https://developers.openai.com/codex/config-reference/) with `env_key`, `requires_openai_auth=false`, and HTTP Responses streaming.
+2. The proxy authenticates the client, selects an account, replaces the authorization header, and supplies that account's ChatGPT account ID when known.
+3. ChatGPT tokens nearing expiry refresh in the proxy. Config updates use a cross-process lock and atomic rename. A matching file-based host Codex login receives refreshed credentials through its mounted directory.
+4. Rate-limit headers update per-account quota tracking. Near the configured threshold, requests prefer a less-used account. The threshold is a preference: a usable account can still serve requests until the backend throttles it.
+5. The usage monitor polls all ChatGPT accounts and automatically redeems available earned reset credits at the configured per-account threshold. Every redemption is persisted before the provider request and verified afterward.
+6. A 401 triggers refresh or marks the account rejected. A 429 or embedded rate-limit failure throttles the account and rotates immediately. Failed credentials remain unavailable until replaced.
+7. SSE streams track usage, including CRLF events and `data:` fields without a space. An embedded 429 can retry another account before any output is sent; after output starts, the connection closes so Codex can retry.
+8. If no account is available, the proxy returns 429 with a retry delay. Usage statistics are held in memory and reset when the proxy restarts.
+
+Use TeamCodex to launch sessions using its accounts. Independently running a native Codex session against the same upstream login can still compete to refresh that login; account listing no longer refreshes tokens.
+
+## Native development and TUI
+
+The Docker launcher is the normal installation. For development, Node.js 22+ can run the source directly on either platform:
+
+```bash
+node src/index.js init
+node src/index.js login --browser
+node src/index.js serve
+# Another terminal:
+node src/index.js run --safe
+```
+
+Native config defaults to `~/.config/teamcodex.json` or `$XDG_CONFIG_HOME/teamcodex.json`, overridden by `TEAMCODEX_CONFIG`. Native listening defaults to `127.0.0.1`. Native loopback clients are accepted without a proxy key; other connections require the key. Docker always requires it.
+
+A native server attached to a terminal displays the interactive dashboard. Keys: `s` switches accounts, `a` adds an account, `r` removes one, `R` reloads additions/changes/removals, and `q` quits. Use arrows or `j`/`k`, Enter, and Escape in selections. API key paste is supported and input is masked. Docker runs without the TUI; use `status` and `logs`.
+
+Full request/response logging is available with native `serve --log-to DIR`. To enable it in Docker, set `"logDir": "/config/requests"` in config and restart. Request logs may include prompts, model output, and account metadata. Keep them private. Docker's normal service logs rotate at 10 MB, keeping three files.
+
+## Verification
+
+```bash
+npm test
+bash -n teamcodex.sh install.sh install-team-repos.sh run-team-servers.sh
+
+docker build -f test/Dockerfile.ubuntu -t teamcodex-test:ubuntu .
+docker run --rm teamcodex-test:ubuntu
+```
+
+Tests cover concurrent config writes, reset backups and permissions, account reload/removal during active requests, token-refresh races, 401/429 rotation, SSE framing, OAuth state checks, automatic usage-reset thresholds and credit availability, persisted cooldowns and idempotent retries, and literal argument handling through the native and Docker launchers. They use fake credentials and local upstream servers. CI runs Node.js 22 and 24 on macOS and Ubuntu, plus the Docker/Ubuntu test image.
+
+## Troubleshooting
+
+- **Docker cannot connect:** start Docker Desktop on Mac; on Ubuntu check `systemctl status docker` and your user's Docker access. Verify `docker info` succeeds as the same user running TeamCodex.
+- **No accounts configured:** run `teamcodex login --device-auth` or `teamcodex import`, then `teamcodex serve`.
+- **Port already allocated:** stop the old proxy using that port or set `TEAMCODEX_PORT` consistently for both server and launcher.
+- **Config permission denied:** check ownership of `TEAMCODEX_CONFIG_DIR`. Run the installer and launcher as your regular user. Avoid mixing root and regular-user installations.
+- **Config is locked:** wait for another command to finish. If a process crashed while writing, stop TeamCodex and all its CLI commands, then remove the empty `config.json.lock` directory next to the config and retry. Config writes themselves remain atomic.
+- **Import file not found:** `--from` paths are container paths. Use `/codex/auth.json`, another file inside `/codex`, or `/config/...`.
+- **Credential rejected or revoked:** run `teamcodex login --device-auth` again; the server reloads the replacement credentials.
+- **Unhealthy container:** inspect `teamcodex logs` and `teamcodex ps`. The health check verifies the local authenticated status endpoint; it does not spend tokens or confirm upstream model access.
+- **Automatic resets are not triggering:** check `teamcodex status` for the current usage, available credits, policy, and last result. A new redemption requires the threshold, confirmed credit availability, a known account ID, and an expired one-hour cooldown. Usage checks must succeed. Unknown availability is never treated as an available credit.
+- **An old npm command runs:** check `command -v teamcodex`; put `~/.local/bin` before an old global npm bin directory in PATH, or invoke this checkout's `./teamcodex.sh` explicitly.
 
 ## License
 

@@ -23,7 +23,7 @@ function emptyQuota() {
  * Codex sends `x-codex-*-reset-at` as unix seconds; be tolerant of ms too.
  */
 function parseResetAt(value) {
-  const n = parseFloat(value);
+  const n = Number(value);
   if (isNaN(n)) {
     const t = Date.parse(value);
     return isNaN(t) ? null : t;
@@ -60,6 +60,11 @@ export class AccountManager {
     this.switchThreshold = switchThreshold;
   }
 
+  _resolveAccount(account) {
+    return typeof account === 'number' ? this.accounts[account] :
+      this.accounts.includes(account) ? account : undefined;
+  }
+
   _buildAccount(acct, index) {
     return {
       index,
@@ -67,7 +72,7 @@ export class AccountManager {
       type: acct.type,
       accountId: acct.accountId || null,
       planType: acct.planType || null,
-      credential: acct.accessToken || acct.apiKey,
+      credential: acct.type === 'apikey' ? acct.apiKey : acct.accessToken,
       refreshToken: acct.refreshToken || null,
       idToken: acct.idToken || null,
       expiresAt: acct.expiresAt || null,
@@ -80,6 +85,7 @@ export class AccountManager {
         lastUsed: null,
       },
       rateLimitedUntil: null,
+      usageReset: { availableCredits: null, checkedAt: null, lastResult: null, pending: false },
     };
   }
 
@@ -215,30 +221,6 @@ export class AccountManager {
       return best;
     }
 
-    // All accounts throttled/errored — find the one that resets soonest
-    let soonestAccount = null;
-    let soonestTime = Infinity;
-
-    for (const account of this.accounts) {
-      const resetTime = account.rateLimitedUntil
-        || account.quota.primaryReset
-        || account.quota.secondaryReset
-        || account.quota.resetsAt;
-
-      if (resetTime && resetTime < soonestTime) {
-        soonestTime = resetTime;
-        soonestAccount = account;
-      }
-    }
-
-    if (soonestAccount && soonestTime <= Date.now()) {
-      soonestAccount.status = 'active';
-      soonestAccount.rateLimitedUntil = null;
-      this.currentIndex = soonestAccount.index;
-      console.log(`[TeamCodex] Account "${soonestAccount.name}" reset, switching to it`);
-      return soonestAccount;
-    }
-
     return null;
   }
 
@@ -246,7 +228,7 @@ export class AccountManager {
    * Update an account's quota tracking from upstream response headers.
    */
   updateQuota(accountIndex, headers) {
-    const account = this.accounts[accountIndex];
+    const account = this._resolveAccount(accountIndex);
     if (!account) return;
     const q = account.quota;
 
@@ -305,7 +287,7 @@ export class AccountManager {
    * Update cumulative token usage from response body data.
    */
   updateUsage(accountIndex, inputTokens, outputTokens) {
-    const account = this.accounts[accountIndex];
+    const account = this._resolveAccount(accountIndex);
     if (!account) return;
     if (inputTokens) account.usage.totalInputTokens += inputTokens;
     if (outputTokens) account.usage.totalOutputTokens += outputTokens;
@@ -315,7 +297,7 @@ export class AccountManager {
    * Mark an account as rate-limited for a given duration.
    */
   markRateLimited(accountIndex, retryAfterSeconds) {
-    const account = this.accounts[accountIndex];
+    const account = this._resolveAccount(accountIndex);
     if (!account) return;
     account.status = 'throttled';
     account.rateLimitedUntil = Date.now() + (retryAfterSeconds * 1000);
@@ -328,7 +310,7 @@ export class AccountManager {
    * account is skipped until it gets new tokens (re-login/import + reload).
    */
   markAuthFailed(accountIndex) {
-    const account = this.accounts[accountIndex];
+    const account = this._resolveAccount(accountIndex);
     if (!account) return;
     account.status = 'error';
     console.log(`[TeamCodex] Account "${account.name}" credentials rejected — switching accounts. Fix with: teamcodex login`);
@@ -340,30 +322,45 @@ export class AccountManager {
    * Concurrent calls for the same account coalesce into a single refresh.
    */
   async ensureTokenFresh(accountIndex, force = false) {
-    const account = this.accounts[accountIndex];
+    const account = this._resolveAccount(accountIndex);
     if (!account || account.type !== 'chatgpt' || !account.refreshToken) return;
 
+    if (account._refreshAfter && Date.now() < account._refreshAfter) return;
     if (!force && !isTokenExpiringSoon(account.expiresAt)) return;
 
     // Coalesce concurrent refreshes
     if (account._refreshPromise) return account._refreshPromise;
 
+    const refreshToken = account.refreshToken;
     account._refreshPromise = (async () => {
       console.log(`[TeamCodex] Refreshing token for account "${account.name}"...`);
       try {
-        const newTokens = await refreshAccessToken(account.refreshToken);
+        const newTokens = await refreshAccessToken(refreshToken);
+        // A removal or re-import may have happened while the request was pending.
+        if (!this.accounts.includes(account) || account.refreshToken !== refreshToken) return;
+        if (account._refreshAfter) {
+          account.status = 'active';
+          account.rateLimitedUntil = null;
+          account._refreshAfter = null;
+        }
         account.credential = newTokens.accessToken;
         account.refreshToken = newTokens.refreshToken;
         if (newTokens.idToken) account.idToken = newTokens.idToken;
         account.expiresAt = newTokens.expiresAt;
         console.log(`[TeamCodex] Token refreshed for account "${account.name}"`);
-        this._onTokenRefresh?.(accountIndex, newTokens);
+        try {
+          await this._onTokenRefresh?.(account.index, newTokens, refreshToken);
+        } catch (err) {
+          console.error(`[TeamCodex] Failed to persist refreshed tokens: ${err.message}`);
+        }
       } catch (err) {
+        if (!this.accounts.includes(account) || account.refreshToken !== refreshToken) return;
         console.error(`[TeamCodex] Token refresh failed for "${account.name}": ${err.message}`);
         // A revoked/invalid grant is permanent — stop re-attempting the
         // refresh on every request. The access token may still work until it
         // expires; after that the 401 path rotates to another account.
-        if (/invalid_grant|revoked|refresh failed \(40[013]\)/i.test(err.message)) {
+        const permanent = /invalid_grant|revoked|refresh failed \(40[013]\)/i.test(err.message);
+        if (permanent) {
           account.refreshToken = null;
         }
         // A forced refresh means upstream already rejected the access token
@@ -372,7 +369,13 @@ export class AccountManager {
         // the token actually expires; a failed proactive refresh shouldn't
         // kill a still-valid token.
         if (force || !account.expiresAt || Date.now() >= account.expiresAt) {
-          account.status = 'error';
+          if (permanent) account.status = 'error';
+          else {
+            account._refreshAfter = Date.now() + 60_000;
+            this.markRateLimited(account, 60);
+          }
+        } else if (!permanent) {
+          account._refreshAfter = Date.now() + 60_000;
         }
       } finally {
         account._refreshPromise = null;
@@ -390,27 +393,6 @@ export class AccountManager {
   }
 
   /**
-   * Update a specific account's tokens (e.g. after a re-import).
-   */
-  updateAccountTokens(accountIndex, { accessToken, refreshToken, idToken, expiresAt }) {
-    const account = this.accounts[accountIndex];
-    if (!account || account.type !== 'chatgpt') return;
-
-    account.credential = accessToken;
-    if (refreshToken) account.refreshToken = refreshToken;
-    if (idToken) account.idToken = idToken;
-    account.expiresAt = expiresAt;
-    if (account.status === 'error') account.status = 'active';
-    console.log(`[TeamCodex] Updated tokens for account "${account.name}"`);
-    this._onTokenRefresh?.(accountIndex, {
-      accessToken,
-      refreshToken: account.refreshToken,
-      idToken: account.idToken,
-      expiresAt: account.expiresAt,
-    });
-  }
-
-  /**
    * Add a new account at runtime.
    */
   addAccount(acctData) {
@@ -424,6 +406,7 @@ export class AccountManager {
    */
   removeAccount(index) {
     if (index < 0 || index >= this.accounts.length) return;
+    this.accounts[index].index = -1;
     this.accounts.splice(index, 1);
     this.accounts.forEach((a, i) => a.index = i);
     if (this.currentIndex >= this.accounts.length) {
@@ -440,6 +423,7 @@ export class AccountManager {
     return {
       currentAccount: this.accounts[this.currentIndex]?.name,
       switchThreshold: this.switchThreshold,
+      autoReset: this.autoReset,
       accounts: this.accounts.map(a => ({
         name: a.name,
         type: a.type,
@@ -447,6 +431,7 @@ export class AccountManager {
         status: a.status,
         quota: { ...a.quota },
         usage: { ...a.usage },
+        usageReset: { ...a.usageReset },
         rateLimitedUntil: a.rateLimitedUntil
           ? new Date(a.rateLimitedUntil).toISOString()
           : null,

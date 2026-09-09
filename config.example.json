@@ -1,28 +1,27 @@
 {
   "proxy": {
+    "host": "127.0.0.1",
     "port": 1456,
-    "apiKey": "tcx-change-me-to-a-secret"
+    "apiKey": "tcx-replace-with-a-generated-secret"
   },
   "upstream": "https://chatgpt.com",
   "apiUpstream": "https://api.openai.com",
   "switchThreshold": 0.98,
+  "autoReset": {
+    "enabled": true,
+    "threshold": 0.98,
+    "pollIntervalSeconds": 300
+  },
   "accounts": [
     {
-      "name": "primary-pro",
+      "name": "primary",
       "type": "chatgpt",
       "importFrom": "~/.codex/auth.json"
-    },
-    {
-      "name": "secondary-pro",
-      "type": "chatgpt",
-      "accessToken": "eyJ...your-access-token",
-      "refreshToken": "rt.1...your-refresh-token",
-      "idToken": "eyJ...your-id-token"
-    },
-    {
-      "name": "api-fallback",
-      "type": "apikey",
-      "apiKey": "sk-your-api-key"
     }
-  ]
+  ],
+  "retry": {
+    "maxRetries": 2,
+    "headerTimeoutSeconds": 60,
+    "idleTimeoutSeconds": 120
+  }
 }

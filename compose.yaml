@@ -1,0 +1,43 @@
+name: teamcodex
+services:
+  teamcodex:
+    image: teamcodex:local
+    build: .
+    user: "${TEAMCODEX_UID:-1000}:${TEAMCODEX_GID:-1000}"
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${TEAMCODEX_PORT:-1456}:1456"
+    environment:
+      TEAMCODEX_CONFIG: /config/config.json
+      TEAMCODEX_LISTEN_HOST: 0.0.0.0
+      TEAMCODEX_LISTEN_PORT: "1456"
+      TEAMCODEX_REQUIRE_API_KEY: "1"
+      TEAMCODEX_PORT: "${TEAMCODEX_PORT:-1456}"
+      CODEX_HOME: /codex
+    volumes:
+      - type: bind
+        source: ${TEAMCODEX_CONFIG_DIR:?Use ./teamcodex.sh or set TEAMCODEX_CONFIG_DIR}
+        target: /config
+      - type: bind
+        source: ${TEAMCODEX_CODEX_HOME:?Use ./teamcodex.sh or set TEAMCODEX_CODEX_HOME}
+        target: /codex
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "src/healthcheck.js"]
+      interval: 10s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

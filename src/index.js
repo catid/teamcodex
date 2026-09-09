@@ -4,23 +4,50 @@ import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { loadOrCreateConfig, loadConfig, saveConfig, atomicConfigUpdate, getConfigPath } from './config.js';
+import { loadOrCreateConfig, loadConfig, atomicConfigUpdate, getConfigPath, resetConfig } from './config.js';
 import { AccountManager } from './account-manager.js';
 import { createProxyServer } from './server.js';
 import {
   importCredentials, loginOAuth, deviceCodeLogin, accountInfoFromTokens,
-  refreshAccessToken, isTokenExpiringSoon, defaultCodexAuthPath,
+  defaultCodexAuthPath,
 } from './oauth.js';
 import { TUI } from './tui.js';
+import { findConfigAccount, resolveAccounts, syncAccountsFromDisk } from './accounts.js';
+import { UsageResetMonitor } from './usage-reset.js';
 
 const args = process.argv.slice(2);
 const command = args[0];
 
 switch (command) {
+  case 'smoke': {
+    const { smokeCommand } = await import('./smoke.js');
+    await smokeCommand(args.slice(1));
+    break;
+  }
   case 'serve':
   case 'server':
     await serveCommand();
     break;
+  case 'init': {
+    const config = await loadOrCreateConfig();
+    if (config.accounts.length === 0) {
+      try {
+        const creds = await importCredentials();
+        await upsertChatGPTAccount(config, null, creds, 'import');
+      } catch (err) {
+        console.log(`No credentials imported: ${err.message}`);
+        console.log('Add an account with: teamcodex login --device-auth');
+      }
+    }
+    break;
+  }
+  case 'reset': {
+    const { backupPath } = await resetConfig();
+    console.log(`Reset config at ${getConfigPath()} (accounts preserved)`);
+    if (backupPath) console.log(`Backup: ${backupPath}`);
+    console.log('Restart any running TeamCodex server to apply the new settings.');
+    break;
+  }
   case 'run':
     await runCommand();
     break;
@@ -92,57 +119,43 @@ async function serveCommand() {
     process.exit(1);
   }
 
-  const threshold = config.switchThreshold || 0.98;
+  config.accounts = accounts;
+  const threshold = config.switchThreshold ?? 0.98;
   const accountManager = new AccountManager(accounts, threshold);
 
   // Persist refreshed tokens back to config (re-read from disk to avoid clobbering
   // accounts added externally, e.g. by `teamcodex import` while server is running)
-  accountManager.onTokenRefresh((idx, newTokens) => {
+  accountManager.onTokenRefresh(async (idx, newTokens, previousRefreshToken) => {
     const account = accountManager.accounts[idx];
     if (!account) return;
-    // Keep config.accounts in sync so TUI saveConfig doesn't clobber fresh tokens
-    if (config.accounts[idx]) {
-      config.accounts[idx].accessToken = newTokens.accessToken;
-      config.accounts[idx].refreshToken = newTokens.refreshToken;
-      if (newTokens.idToken) config.accounts[idx].idToken = newTokens.idToken;
-      config.accounts[idx].expiresAt = newTokens.expiresAt;
-    }
-    atomicConfigUpdate(diskConfig => {
-      // Pick up any new accounts from disk so index matching stays correct
-      // (only add, don't refresh credentials — we're about to write the authoritative tokens)
-      for (const diskAcct of diskConfig.accounts) {
-        const known = (diskAcct.accountId && config.accounts.some(a => a.accountId === diskAcct.accountId))
-          || config.accounts.some(a => a.name === diskAcct.name);
-        if (!known) {
-          config.accounts.push(diskAcct);
-          accountManager.addAccount(diskAcct);
-        }
-      }
-      // Match by account id first, then by name — index may have shifted
+    const memIdx = findConfigAccount(config, account);
+    if (memIdx >= 0) Object.assign(config.accounts[memIdx], newTokens);
+    let persisted = false;
+    await atomicConfigUpdate(diskConfig => {
       const cfgIdx = findConfigAccount(diskConfig, account);
-      if (cfgIdx >= 0) {
-        diskConfig.accounts[cfgIdx].accessToken = newTokens.accessToken;
-        diskConfig.accounts[cfgIdx].refreshToken = newTokens.refreshToken;
-        if (newTokens.idToken) diskConfig.accounts[cfgIdx].idToken = newTokens.idToken;
-        diskConfig.accounts[cfgIdx].expiresAt = newTokens.expiresAt;
+      const diskAccount = diskConfig.accounts[cfgIdx];
+      if (diskAccount && (!diskAccount.refreshToken || diskAccount.refreshToken === previousRefreshToken)) {
+        Object.assign(diskAccount, newTokens);
+        persisted = true;
       }
-    }).catch(err => console.error(`[TeamCodex] Failed to save refreshed token: ${err.message}`));
-    // Keep the Codex CLI's own auth.json in step — codex refreshes its copy
-    // independently, and once we rotate the refresh token its stale copy
-    // fails with "refresh token was revoked. Please log out and sign in again."
-    updateCodexAuthIfMatching(account, newTokens)
-      .catch(err => console.error(`[TeamCodex] Failed to sync codex auth.json: ${err.message}`));
+    });
+    if (persisted) await updateCodexAuthIfMatching(account, newTokens);
   });
-  const port = config.proxy.port;
+  const port = Number(process.env.TEAMCODEX_LISTEN_PORT || config.proxy.port);
   const useTUI = process.stdout.isTTY && process.stdin.isTTY;
 
   // Re-read config from disk and sync accounts into the running server.
   // Reached from the TUI (R key) and the /teamcodex/reload endpoint that
   // `teamcodex login/import/remove` hit after writing the config.
-  const reloadAccounts = async ({ removeMissing = false } = {}) => {
-    const diskConfig = await loadConfig();
-    if (!diskConfig) return { added: 0, updated: 0, removed: 0 };
-    return syncAccountsFromDisk(diskConfig, config, accountManager, { removeMissing });
+  let reloadPending = Promise.resolve();
+  const reloadAccounts = (options = {}) => {
+    const next = reloadPending.then(async () => {
+      const diskConfig = await loadConfig();
+      if (!diskConfig) return { added: 0, updated: 0, removed: 0 };
+      return syncAccountsFromDisk(diskConfig, config, accountManager, options);
+    });
+    reloadPending = next.catch(() => {});
+    return next;
   };
 
   let tui = null;
@@ -151,36 +164,37 @@ async function serveCommand() {
   if (useTUI) {
     tui = new TUI({
       accountManager, config,
-      saveConfig: () => atomicConfigUpdate(async diskConfig => {
-        // Write in-memory accounts as the authoritative state, preserving
-        // extra disk-only fields (e.g. importFrom) where the account still exists.
-        // Use live tokens from AccountManager (not the stale config.accounts copy).
-        diskConfig.accounts = config.accounts.map((a, i) => {
-          const am = accountManager.accounts[i];
-          const live = am ? {
-            ...a,
-            accessToken: am.credential,
-            refreshToken: am.refreshToken,
-            idToken: am.idToken,
-            expiresAt: am.expiresAt,
-          } : a;
-          const diskAcct = diskConfig.accounts.find(
-            d => (a.accountId && d.accountId === a.accountId) || d.name === a.name
-          );
-          return diskAcct ? { ...diskAcct, ...live } : live;
-        });
+      saveConfig: ({ upsert, remove }) => atomicConfigUpdate(diskConfig => {
+        if (remove) {
+          const idx = findConfigAccount(diskConfig, remove);
+          if (idx >= 0) diskConfig.accounts.splice(idx, 1);
+        }
+        if (upsert) {
+          const idx = findConfigAccount(diskConfig, upsert);
+          if (idx >= 0) diskConfig.accounts[idx] = { ...diskConfig.accounts[idx], ...upsert };
+          else diskConfig.accounts.push(upsert);
+        }
       }),
       syncAccounts: reloadAccounts,
-      onQuit: () => { server.close(() => process.exit(0)); },
+      onQuit: () => shutdown(),
     });
     hooks.onRequestStart = (id, info) => tui.onRequestStart(id, info);
     hooks.onRequestRouted = (id, info) => tui.onRequestRouted(id, info);
     hooks.onRequestEnd = (id, info) => tui.onRequestEnd(id, info);
   }
 
+  const usageMonitor = new UsageResetMonitor(accountManager, config);
+  hooks.onAccountsUnavailable = () => usageMonitor.recover();
   const server = createProxyServer(accountManager, config, hooks);
+  server.once('close', () => usageMonitor.stop());
 
-  server.listen(port, () => {
+  server.on('error', err => {
+    if (tui?.running) tui.stop();
+    console.error(`Cannot start proxy: ${err.message}`);
+    process.exitCode = 1;
+  });
+  server.listen(port, process.env.TEAMCODEX_LISTEN_HOST || config.proxy.host || '127.0.0.1', () => {
+    usageMonitor.start();
     if (tui) {
       tui.start();
       console.log(`Listening on port ${port} with ${accounts.length} account(s)`);
@@ -206,16 +220,15 @@ async function serveCommand() {
     }
   });
 
-  if (!tui) {
-    process.on('SIGINT', () => {
-      console.log('\n[TeamCodex] Shutting down...');
-      server.close(() => process.exit(0));
-    });
-    process.on('SIGTERM', () => {
-      console.log('\n[TeamCodex] Shutting down...');
-      server.close(() => process.exit(0));
-    });
+  function shutdown() {
+    usageMonitor.stop();
+    if (tui?.running) tui.stop();
+    server.close(() => process.exit(0));
+    const timer = setTimeout(() => { server.closeAllConnections(); process.exit(0); }, 5000);
+    timer.unref();
   }
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }
 
 // ── import ──────────────────────────────────────────────────
@@ -325,7 +338,7 @@ async function loginDeviceCommand() {
 }
 
 async function loginApiCommand() {
-  const config = await loadOrCreateConfig();
+  await loadOrCreateConfig();
   let name = argValue('--name');
 
   const rl = createInterface({ input: process.stdin, output: process.stderr });
@@ -337,16 +350,20 @@ async function loginApiCommand() {
     process.exit(1);
   }
 
-  if (!name) {
-    const n = config.accounts.filter(a => a.name.startsWith('api-')).length + 1;
-    name = `api-${n}`;
-  }
-
-  config.accounts.push({ name, type: 'apikey', apiKey: apiKey.trim() });
-  await saveConfig(config);
+  const saved = await atomicConfigUpdate(diskConfig => {
+    if (!name) {
+      let n = 1;
+      while (diskConfig.accounts.some(a => a.name === `api-${n}`)) n++;
+      name = `api-${n}`;
+    }
+    const entry = { name, type: 'apikey', apiKey: apiKey.trim() };
+    const idx = diskConfig.accounts.findIndex(a => a.name === name);
+    if (idx >= 0) diskConfig.accounts[idx] = entry;
+    else diskConfig.accounts.push(entry);
+  });
   console.log(`Added API key account "${name}"`);
   console.log(`Saved to ${getConfigPath()}`);
-  await notifyServerReload(config);
+  await notifyServerReload(saved);
 }
 
 async function loginOAuthCommand() {
@@ -374,22 +391,27 @@ async function loginOAuthCommand() {
 
 async function envCommand() {
   const config = await loadOrCreateConfig();
-  const o = codexOverrideArgs(config.proxy.port);
-  const lines = [];
-  for (let i = 0; i < o.length; i += 2) lines.push(`${o[i]} ${o[i + 1]}`);
-  console.log(lines.join(' \\\n'));
+  const overrides = codexOverrideArgs(config);
+  if (args.includes('--null')) {
+    process.stdout.write([config.proxy.apiKey, ...overrides].join('\0') + '\0');
+    return;
+  }
+  const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
+  console.log(`TEAMCODEX_API_KEY=${quote(config.proxy.apiKey)} codex ${overrides.map(quote).join(' ')}`);
 }
 
 // ── run ─────────────────────────────────────────────────────
 
-function codexOverrideArgs(port) {
+function codexOverrideArgs(config) {
+  const port = process.env.TEAMCODEX_PORT || config.proxy.port;
   return [
     '-c', 'model_provider=teamcodex',
     '-c', 'model_providers.teamcodex.name=TeamCodex',
     '-c', `model_providers.teamcodex.base_url=http://127.0.0.1:${port}/backend-api/codex`,
     '-c', 'model_providers.teamcodex.wire_api=responses',
-    '-c', 'model_providers.teamcodex.requires_openai_auth=true',
-    '-c', `chatgpt_base_url=http://127.0.0.1:${port}/backend-api`,
+    '-c', 'model_providers.teamcodex.requires_openai_auth=false',
+    '-c', 'model_providers.teamcodex.env_key=TEAMCODEX_API_KEY',
+    '-c', 'model_providers.teamcodex.supports_websockets=false',
   ];
 }
 
@@ -402,74 +424,6 @@ async function writeCodexAuth(authPath, auth) {
   const tmpPath = `${authPath}.${process.pid}.tmp`;
   await writeFile(tmpPath, JSON.stringify(auth, null, 2) + '\n', { mode: 0o600 });
   await rename(tmpPath, authPath);
-}
-
-/**
- * Codex reads ChatGPT tokens from $CODEX_HOME/auth.json and refuses to start
- * without them (the proxy replaces them in-flight anyway). If the user never
- * logged into Codex itself, seed auth.json from the first proxy account.
- *
- * If auth.json exists but its token has gone stale, codex tries to refresh
- * it on its own — and since the proxy rotates that account's refresh token,
- * the stale copy fails with "refresh token was revoked. Please log out and
- * sign in again." When the proxy config holds fresher tokens for the same
- * account, re-seed them instead of letting codex attempt the dead refresh.
- */
-async function ensureCodexAuth(config) {
-  const authPath = defaultCodexAuthPath();
-
-  let auth = null;
-  try {
-    auth = JSON.parse(await readFile(authPath, 'utf-8'));
-  } catch (err) {
-    if (err.code !== 'ENOENT') return; // unreadable — leave it alone
-  }
-
-  if (!auth) {
-    const acct = config.accounts.find(a => a.type === 'chatgpt' && a.accessToken);
-    if (!acct) return;
-    console.log(`Codex CLI has no credentials — seeding ${authPath} from account "${acct.name}"`);
-    await writeCodexAuth(authPath, {
-      auth_mode: 'chatgpt',
-      OPENAI_API_KEY: null,
-      tokens: {
-        id_token: acct.idToken,
-        access_token: acct.accessToken,
-        refresh_token: acct.refreshToken,
-        account_id: acct.accountId,
-      },
-      last_refresh: new Date().toISOString(),
-    });
-    return;
-  }
-
-  const tokens = auth.tokens || {};
-  const info = accountInfoFromTokens({
-    accessToken: tokens.access_token,
-    idToken: tokens.id_token,
-    accountId: tokens.account_id,
-  });
-  if (!isTokenExpiringSoon(info.expiresAt)) return; // still fresh — codex won't refresh
-
-  // Only replace tokens for an account the proxy manages — never clobber an
-  // unrelated codex login.
-  const acct = config.accounts.find(a =>
-    a.type === 'chatgpt' && a.accessToken && a.accountId && a.accountId === info.accountId);
-  if (!acct) return;
-  if (acct.expiresAt && info.expiresAt && acct.expiresAt <= info.expiresAt) return; // nothing fresher
-
-  console.log(`Codex CLI token is stale — updating ${authPath} from account "${acct.name}"`);
-  await writeCodexAuth(authPath, {
-    ...auth,
-    tokens: {
-      ...tokens,
-      id_token: acct.idToken ?? tokens.id_token,
-      access_token: acct.accessToken,
-      refresh_token: acct.refreshToken,
-      account_id: acct.accountId ?? tokens.account_id,
-    },
-    last_refresh: new Date().toISOString(),
-  });
 }
 
 /**
@@ -524,16 +478,26 @@ async function runCommand() {
   const safeIdx = codexArgs.indexOf('--safe');
   if (safeIdx >= 0) { bypass = false; codexArgs.splice(safeIdx, 1); }
 
-  await ensureCodexAuth(config);
+  const settings = [];
+  for (let i = 0; i < codexArgs.length && codexArgs[i] !== '--';) {
+    if (['-c', '--config'].includes(codexArgs[i])) {
+      if (i + 1 >= codexArgs.length) throw new Error(`${codexArgs[i]} requires a value`);
+      settings.push(...codexArgs.splice(i, 2));
+    } else if (/^(--config|-c)=/.test(codexArgs[i])) settings.push(...codexArgs.splice(i, 1));
+    else i++;
+  }
+  settings.push(...codexOverrideArgs(config));
+  if (bypass) settings.push('--dangerously-bypass-approvals-and-sandbox');
+  const delimiter = codexArgs.indexOf('--');
+  const fullArgs = [...codexArgs];
+  fullArgs.splice(delimiter < 0 ? fullArgs.length : delimiter, 0, ...settings);
 
-  const fullArgs = [...codexArgs, ...codexOverrideArgs(config.proxy.port)];
-  if (bypass) fullArgs.push('--dangerously-bypass-approvals-and-sandbox');
-
-  // Codex keeps its own ChatGPT token in $CODEX_HOME/auth.json — the proxy
-  // accepts requests from localhost and swaps in the active account's
-  // credentials, so codex stays in subscription mode untouched.
+  // Authenticate to the proxy with its own key; only the proxy refreshes
+  // upstream account credentials for this session.
   // Use spawnSync so the Node process blocks entirely — behaves like execvp.
-  const result = spawnSync('codex', fullArgs, { stdio: 'inherit' });
+  const result = spawnSync('codex', fullArgs, {
+    stdio: 'inherit', env: { ...process.env, TEAMCODEX_API_KEY: config.proxy.apiKey },
+  });
 
   if (result.error) {
     if (result.error.code === 'ENOENT') {
@@ -551,14 +515,19 @@ async function runCommand() {
 
 async function statusCommand() {
   const config = await loadOrCreateConfig();
-  const url = `http://localhost:${config.proxy.port}/teamcodex/status`;
+  const base = process.env.TEAMCODEX_SERVER_URL || `http://127.0.0.1:${config.proxy.port}`;
+  const url = `${base}/teamcodex/status`;
 
   try {
-    const res = await fetch(url, { headers: { 'x-api-key': config.proxy.apiKey } });
+    const res = await fetch(url, { headers: { 'x-api-key': config.proxy.apiKey }, signal: AbortSignal.timeout(5000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
 
     console.log(`Active account: ${data.currentAccount}`);
     console.log(`Switch at:      ${(data.switchThreshold * 100).toFixed(0)}% usage\n`);
+    if (data.autoReset) {
+      console.log(`Auto reset:     ${data.autoReset.enabled ? `enabled at ${(data.autoReset.threshold * 100).toFixed(0)}%` : 'disabled'}; checks every ${data.autoReset.pollIntervalSeconds}s\n`);
+    }
 
     for (const acct of data.accounts) {
       const q = acct.quota;
@@ -567,6 +536,12 @@ async function statusCommand() {
 
       console.log(`  ${acct.name} (${acct.type}${plan})${current}`);
       console.log(`    Status:   ${acct.status}`);
+      if (acct.type === 'chatgpt' && acct.usageReset) {
+        const reset = acct.usageReset;
+        console.log(`    Resets:   ${reset.availableCredits ?? 'unknown'} credit(s) available${reset.lastResult ? `; last attempt: ${reset.lastResult}` : ''}`);
+        if (reset.pending) console.log('              Pending redemption retained for a safe retry');
+        if (reset.checkError) console.log(`              Usage check unavailable: ${reset.checkError}`);
+      }
 
       if (q.primary != null || q.secondary != null) {
         const p = q.primary != null ? (q.primary * 100).toFixed(1) + '%' : '-';
@@ -601,60 +576,9 @@ async function accountsCommand() {
     return;
   }
 
-  // Refresh expired tokens
-  let configDirty = false;
-  await Promise.all(config.accounts.map(async (a) => {
-    if (a.type !== 'chatgpt' || !a.refreshToken) return;
-    if (!isTokenExpiringSoon(a.expiresAt)) return;
-    try {
-      const newTokens = await refreshAccessToken(a.refreshToken);
-      a.accessToken = newTokens.accessToken;
-      a.refreshToken = newTokens.refreshToken;
-      if (newTokens.idToken) a.idToken = newTokens.idToken;
-      a.expiresAt = newTokens.expiresAt;
-      configDirty = true;
-    } catch {
-      // refresh failed — shown as expired below
-    }
-  }));
-
-  // Deduplicate by account id — keep the last (most recently added) entry
-  const seen = new Map();
-  let removed = 0;
-  for (let i = config.accounts.length - 1; i >= 0; i--) {
-    const a = config.accounts[i];
-    if (a.type !== 'chatgpt') continue;
-    const info = accountInfoFromTokens({ accessToken: a.accessToken, idToken: a.idToken, accountId: a.accountId });
-    const id = info.accountId;
-    if (id) {
-      if (seen.has(id)) {
-        config.accounts.splice(i, 1);
-        removed++;
-        configDirty = true;
-      } else {
-        seen.set(id, i);
-        // Update stored metadata from token claims
-        a.accountId = id;
-        if (info.email && a.name !== info.email && !a.name.startsWith('account-')) {
-          // keep custom names
-        } else if (info.email) {
-          a.name = info.email;
-        }
-        if (info.planType) a.planType = info.planType;
-      }
-    }
-  }
-  if (configDirty) {
-    await saveConfig(config);
-    // Refreshing rotates refresh tokens — hand the fresh ones to a running
-    // server right away so its in-memory copies don't go stale.
-    await notifyServerReload(config, { removeMissing: removed > 0 });
-  }
-  if (removed > 0) console.log(`Removed ${removed} duplicate account(s)\n`);
-
   for (const [i, a] of config.accounts.entries()) {
     if (a.type === 'apikey') {
-      console.log(`  [${i + 1}] ${a.name} (apikey)  ${a.apiKey?.slice(0, 12)}...`);
+      console.log(`  [${i + 1}] ${a.name} (apikey)  [configured]`);
       continue;
     }
 
@@ -743,7 +667,7 @@ async function apiCommand() {
 // ── remove ──────────────────────────────────────────────────
 
 async function removeCommand() {
-  const config = await loadOrCreateConfig();
+  await loadOrCreateConfig();
   const name = args[1];
 
   if (!name) {
@@ -751,16 +675,13 @@ async function removeCommand() {
     process.exit(1);
   }
 
-  const idx = config.accounts.findIndex(a => a.name === name);
-  if (idx < 0) {
-    console.error(`Account "${name}" not found`);
-    process.exit(1);
-  }
-
-  config.accounts.splice(idx, 1);
-  await saveConfig(config);
+  const saved = await atomicConfigUpdate(diskConfig => {
+    const idx = diskConfig.accounts.findIndex(a => a.name === name);
+    if (idx < 0) throw new Error(`Account "${name}" not found`);
+    diskConfig.accounts.splice(idx, 1);
+  });
   console.log(`Removed account "${name}"`);
-  await notifyServerReload(config, { removeMissing: true });
+  await notifyServerReload(saved, { removeMissing: true });
 }
 
 // ── help ────────────────────────────────────────────────────
@@ -777,10 +698,13 @@ Commands:
   login --device-auth Device-code login (headless servers, no local browser)
   login --browser     Force the browser/localhost-callback flow
   login --api         Add an OpenAI API key account
-  env                 Print codex -c overrides to use the proxy manually
+  env                 Print a shell command for Codex (includes the proxy key)
   run [args...]       Run Codex through the proxy; args pass through to codex
                       (e.g. "teamcodex run resume", "teamcodex run <prompt>")
+  smoke [--rotate]    Test a live hello; --rotate injects 429 in an isolated proxy
   status              Show proxy & account status (live)
+  init                Create config and import existing Codex login if empty
+  reset               Reset settings and proxy key; back up config, keep accounts
   accounts            List configured accounts
   remove <name>       Remove an account
   api <path>          Call an API endpoint with account credentials
@@ -800,18 +724,13 @@ Config: ${getConfigPath()}
 
 // ── shared account upsert ────────────────────────────────────
 
-async function upsertChatGPTAccount(config, name, creds, source = 'unknown') {
+async function upsertChatGPTAccount(_config, name, creds, source = 'unknown') {
   const info = accountInfoFromTokens(creds);
 
   if (!name && info.email) {
     name = info.email;
     if (info.planType) console.log(`Detected ChatGPT ${info.planType} account: ${info.email}`);
   }
-  if (!name) {
-    const n = config.accounts.filter(a => a.name.startsWith('account-')).length + 1;
-    name = `account-${n}`;
-  }
-
   const account = {
     name,
     type: 'chatgpt',
@@ -824,23 +743,20 @@ async function upsertChatGPTAccount(config, name, creds, source = 'unknown') {
     expiresAt: creds.expiresAt,
   };
 
-  // Deduplicate: match by account id first, then by name
-  let idx = info.accountId
-    ? config.accounts.findIndex(a => a.accountId === info.accountId)
-    : -1;
-  if (idx < 0) idx = config.accounts.findIndex(a => a.name === name);
-
-  if (idx >= 0) {
-    config.accounts[idx] = account;
-    console.log(`Updated account "${name}"`);
-  } else {
-    config.accounts.push(account);
-    console.log(`Added account "${name}"`);
-  }
-
-  await saveConfig(config);
+  let updated = false;
+  const saved = await atomicConfigUpdate(diskConfig => {
+    if (!account.name) {
+      let n = 1;
+      while (diskConfig.accounts.some(a => a.name === `account-${n}`)) n++;
+      account.name = `account-${n}`;
+    }
+    const idx = findConfigAccount(diskConfig, account);
+    if (idx >= 0) { diskConfig.accounts[idx] = account; updated = true; }
+    else diskConfig.accounts.push(account);
+  });
+  console.log(`${updated ? 'Updated' : 'Added'} account "${account.name}"`);
   console.log(`Saved to ${getConfigPath()}`);
-  await notifyServerReload(config);
+  await notifyServerReload(saved);
 }
 
 /**
@@ -855,7 +771,7 @@ async function notifyServerReload(config, { removeMissing = false } = {}) {
   const qs = removeMissing ? '?removeMissing=1' : '';
   const headers = config.proxy?.apiKey ? { 'x-api-key': config.proxy.apiKey } : {};
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/teamcodex/reload${qs}`, {
+    const res = await fetch(`${process.env.TEAMCODEX_SERVER_URL || `http://127.0.0.1:${port}`}/teamcodex/reload${qs}`, {
       method: 'POST',
       headers,
       signal: AbortSignal.timeout(5000),
@@ -869,141 +785,9 @@ async function notifyServerReload(config, { removeMissing = false } = {}) {
     console.log(`Running server reloaded${parts.length ? ` (${parts.join(', ')})` : ' (no changes)'}`);
   } catch (err) {
     const code = err.code || err.cause?.code;
-    if (code === 'ECONNREFUSED') return; // server not running — it'll load the config on start
+    if (code === 'ECONNREFUSED' || code === 'ENOTFOUND' || code === 'EAI_AGAIN') return; // server not running — it'll load the config on start
     console.log(`Note: could not reload running server (${err.message}) — restart it or press R in the TUI`);
   }
-}
-
-// ── config sync helpers ─────────────────────────────────────
-
-/**
- * Find a config account entry matching an in-memory account (by account id, then name).
- */
-function findConfigAccount(diskConfig, account) {
-  if (account.accountId) {
-    const idx = diskConfig.accounts.findIndex(a => a.accountId === account.accountId);
-    if (idx >= 0) return idx;
-  }
-  return diskConfig.accounts.findIndex(a => a.name === account.name);
-}
-
-/**
- * Sync accounts from disk config: add new accounts and refresh credentials
- * for existing ones (handles re-imported tokens, rotated API keys, etc.).
- * With removeMissing, also drops in-memory accounts no longer in the config
- * (used by `teamcodex remove`). Returns { added, updated, removed }.
- */
-async function syncAccountsFromDisk(diskConfig, memConfig, accountManager, { removeMissing = false } = {}) {
-  let added = 0;
-  let updated = 0;
-  for (const diskAcct of diskConfig.accounts) {
-    const matchById = diskAcct.accountId &&
-      memConfig.accounts.findIndex(a => a.accountId === diskAcct.accountId);
-    const matchByName = memConfig.accounts.findIndex(a => a.name === diskAcct.name);
-    const memIdx = (matchById >= 0 ? matchById : null) ?? (matchByName >= 0 ? matchByName : -1);
-
-    if (memIdx < 0) {
-      // New account discovered on disk — add to running server
-      memConfig.accounts.push(diskAcct);
-      accountManager.addAccount(diskAcct);
-      added++;
-      console.log(`[TeamCodex] Picked up new account "${diskAcct.name}" from config`);
-      continue;
-    }
-
-    // Existing account — resolve fresh credentials from disk
-    let freshCred = null;
-    if (diskAcct.type === 'chatgpt' && diskAcct.importFrom) {
-      try {
-        const creds = await importCredentials(diskAcct.importFrom);
-        freshCred = {
-          accessToken: creds.accessToken, refreshToken: creds.refreshToken,
-          idToken: creds.idToken, expiresAt: creds.expiresAt,
-        };
-      } catch (err) {
-        console.error(`[TeamCodex] Re-import failed for "${diskAcct.name}": ${err.message}`);
-      }
-    } else if (diskAcct.type === 'chatgpt' && diskAcct.accessToken) {
-      freshCred = {
-        accessToken: diskAcct.accessToken, refreshToken: diskAcct.refreshToken,
-        idToken: diskAcct.idToken, expiresAt: diskAcct.expiresAt,
-      };
-    } else if (diskAcct.type === 'apikey' && diskAcct.apiKey) {
-      freshCred = { apiKey: diskAcct.apiKey };
-    }
-
-    if (!freshCred) continue;
-
-    // Find the corresponding AccountManager entry and update credentials
-    const mgr = accountManager.accounts.find(a =>
-      (diskAcct.accountId && a.accountId === diskAcct.accountId) || a.name === diskAcct.name
-    );
-    if (!mgr) continue;
-
-    if (freshCred.accessToken) {
-      const changed = mgr.credential !== freshCred.accessToken ||
-        (mgr.refreshToken ?? null) !== (freshCred.refreshToken ?? null);
-      // Don't overwrite in-memory credentials with staler ones from disk
-      // (e.g. after a TUI import updated the AM before saveConfig wrote to disk)
-      const diskIsStaler = freshCred.expiresAt && mgr.expiresAt &&
-        freshCred.expiresAt < mgr.expiresAt;
-      if (changed && !diskIsStaler) {
-        accountManager.updateAccountTokens(mgr.index, freshCred);
-        console.log(`[TeamCodex] Refreshed credentials for "${mgr.name}"`);
-        updated++;
-      }
-    } else if (freshCred.apiKey && mgr.credential !== freshCred.apiKey) {
-      mgr.credential = freshCred.apiKey;
-      if (mgr.status === 'error') mgr.status = 'active';
-      console.log(`[TeamCodex] Updated API key for "${mgr.name}"`);
-      updated++;
-    }
-  }
-
-  let removed = 0;
-  if (removeMissing) {
-    // memConfig.accounts and accountManager.accounts are parallel arrays —
-    // remove from both at the same index, back to front.
-    for (let i = memConfig.accounts.length - 1; i >= 0; i--) {
-      const a = memConfig.accounts[i];
-      const onDisk = diskConfig.accounts.some(d =>
-        (a.accountId && d.accountId === a.accountId) || d.name === a.name);
-      if (!onDisk) {
-        memConfig.accounts.splice(i, 1);
-        accountManager.removeAccount(i);
-        removed++;
-        console.log(`[TeamCodex] Removed account "${a.name}" (deleted from config)`);
-      }
-    }
-  }
-
-  return { added, updated, removed };
-}
-
-// ── helpers ─────────────────────────────────────────────────
-
-async function resolveAccounts(config) {
-  const accounts = [];
-  for (const acct of config.accounts) {
-    if (acct.type === 'chatgpt') {
-      if (acct.importFrom) {
-        try {
-          const creds = await importCredentials(acct.importFrom);
-          accounts.push({ name: acct.name, type: 'chatgpt', planType: acct.planType, ...creds });
-          console.log(`Imported "${acct.name}" from ${acct.importFrom}`);
-        } catch (err) {
-          console.error(`Failed to import "${acct.name}": ${err.message}`);
-        }
-      } else if (acct.accessToken) {
-        accounts.push(acct);
-      } else {
-        console.error(`No token for "${acct.name}", skipping`);
-      }
-    } else if (acct.type === 'apikey' && acct.apiKey) {
-      accounts.push(acct);
-    }
-  }
-  return accounts;
 }
 
 function argValue(flag) {

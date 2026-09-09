@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
-import { exec } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import http from 'node:http';
 
@@ -101,6 +101,7 @@ export async function refreshAccessToken(refreshToken, endpoint = OAUTH_TOKEN) {
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(30_000),
         body: JSON.stringify({
           client_id: OAUTH_CLIENT_ID,
           grant_type: 'refresh_token',
@@ -133,7 +134,7 @@ export async function refreshAccessToken(refreshToken, endpoint = OAUTH_TOKEN) {
       };
     } catch (err) {
       const isNetworkError = err instanceof Error &&
-        (err.message.includes('fetch failed') ||
+        (err.message.includes('fetch failed') || err.name === 'TimeoutError' ||
           (err.code === 'ECONNRESET' || err.code === 'ECONNREFUSED' ||
            err.code === 'ETIMEDOUT' || err.code === 'UND_ERR_CONNECT_TIMEOUT'));
 
@@ -324,37 +325,20 @@ function raceWithStdinCode(callbackPromise, expectedState) {
   });
 }
 
-function parseManualAuthInput(input, expectedState) {
+export function parseManualAuthInput(input, expectedState) {
   const trimmed = input.trim();
   if (!trimmed) return null;
-
-  try {
-    const url = new URL(trimmed);
-    const query = new URLSearchParams(url.search);
-    const code = query.get('code');
-    const state = query.get('state');
-    if (code) {
-      assertOAuthState(state, expectedState);
-      return { code };
-    }
-  } catch {}
-
-  if (trimmed.includes('=') && trimmed.includes('&')) {
-    const params = new URLSearchParams(trimmed);
-    const code = params.get('code');
-    if (code) {
-      assertOAuthState(params.get('state'), expectedState);
-      return { code };
-    }
+  let url;
+  try { url = new URL(trimmed); } catch { /* Raw code or query string. */ }
+  const params = url ? url.searchParams :
+    trimmed.includes('=') && trimmed.includes('&') ? new URLSearchParams(trimmed) : null;
+  if (params) {
+    if (expectedState && params.get('state') !== expectedState) throw new Error('OAuth state mismatch');
+    if (params.get('error')) throw new Error(`OAuth error: ${params.get('error')}`);
+    if (!params.get('code')) throw new Error('Callback URL is missing an authorization code');
+    return { code: params.get('code') };
   }
-
   return { code: trimmed };
-}
-
-function assertOAuthState(actualState, expectedState) {
-  if (expectedState && actualState && actualState !== expectedState) {
-    throw new Error('OAuth state mismatch');
-  }
 }
 
 function startCallbackServer(expectedState) {
@@ -416,13 +400,15 @@ function startCallbackServer(expectedState) {
       server.close();
     }, 300_000);
     timer.unref();
+    server.on('close', () => clearTimeout(timer));
+    server.on('error', () => clearTimeout(timer));
   });
 }
 
 function openBrowser(url) {
-  const platform = process.platform;
-  const cmd = platform === 'darwin' ? 'open'
-    : platform === 'win32' ? 'start'
-    : 'xdg-open';
-  exec(`${cmd} ${JSON.stringify(url)}`, () => {});
+  const child = process.platform === 'darwin'
+    ? spawn('open', [url], { stdio: 'ignore' })
+    : spawn('xdg-open', [url], { stdio: 'ignore' });
+  child.on('error', () => {}); // The URL is also printed for manual opening.
+  child.unref();
 }

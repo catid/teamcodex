@@ -209,6 +209,10 @@ export class TUI {
     if (d === '\r' || d === '\n') return this._key('enter');
     if (d === '\x03') return this._key('ctrl-c');
     if (d === '\x7f' || d === '\x08') return this._key('bs');
+    if (this.mode === 'input' && !d.includes('\x1b')) {
+      for (const ch of d) if (ch >= ' ') this._key(ch);
+      return;
+    }
     if (d.length === 1 && d >= ' ') return this._key(d);
   }
 
@@ -238,6 +242,8 @@ export class TUI {
 
   _keySelect(k) {
     const len = this.am.accounts.length;
+    if (!len) { this.mode = 'normal'; return; }
+    this.selIdx = Math.min(this.selIdx, len - 1);
     if (k === 'up' || k === 'k') this.selIdx = Math.max(0, this.selIdx - 1);
     else if (k === 'down' || k === 'j') this.selIdx = Math.min(len - 1, this.selIdx + 1);
     else if (k === 'enter') {
@@ -245,7 +251,7 @@ export class TUI {
         this.am.currentIndex = this.selIdx;
         this._addLog(`Switched to "${this.am.accounts[this.selIdx].name}"`);
       } else {
-        this._doRemove(this.selIdx);
+        this._doRemove(this.selIdx).catch(e => this._addLog(`Remove failed: ${e.message}`));
       }
       this.mode = 'normal';
     }
@@ -258,7 +264,7 @@ export class TUI {
       this.mode = 'input';
       this.inputPrompt = 'API key';
       this.inputBuf = '';
-      this.inputCb = v => { if (v) this._doAddKey(v); };
+      this.inputCb = v => { if (v) this._doAddKey(v).catch(e => this._addLog(`Add failed: ${e.message}`)); };
     }
     else if (k === 'esc' || k === 'q') { this.mode = 'normal'; }
   }
@@ -279,7 +285,7 @@ export class TUI {
 
   async _doSync() {
     try {
-      const { added = 0, updated = 0 } = await this.syncAccounts() || {};
+      const { added = 0, updated = 0 } = await this.syncAccounts({ removeMissing: true }) || {};
       if (added > 0) {
         this._addLog(`Synced ${added} new account(s) from config`);
       } else if (updated > 0) {
@@ -317,55 +323,30 @@ export class TUI {
         expiresAt: creds.expiresAt,
       };
 
-      // Deduplicate: match by account id first, then by name
-      let idx = info.accountId
-        ? this.config.accounts.findIndex(a => a.accountId === info.accountId)
-        : -1;
-      if (idx < 0) idx = this.config.accounts.findIndex(a => a.name === name);
-
-      if (idx >= 0) {
-        this.config.accounts[idx] = entry;
-        // Update the running account manager entry
-        const amAcct = this.am.accounts[idx];
-        if (amAcct) {
-          amAcct.credential = creds.accessToken;
-          amAcct.refreshToken = creds.refreshToken;
-          amAcct.idToken = creds.idToken;
-          amAcct.expiresAt = creds.expiresAt;
-          amAcct.accountId = info.accountId;
-          amAcct.planType = info.planType;
-          amAcct.name = name;
-          if (amAcct.status === 'error') amAcct.status = 'active';
-        }
-        this._addLog(`Updated account "${name}"`);
-      } else {
-        this.config.accounts.push(entry);
-        this.am.addAccount(entry);
-        this._addLog(`Imported account "${name}"`);
-      }
-
-      await this.saveConfig(this.config);
+      await this.saveConfig({ upsert: entry });
+      await this.syncAccounts();
+      this._addLog(`Imported account "${name}"`);
     } catch (e) {
       this._addLog(`Import failed: ${e.message}`);
     }
   }
 
   async _doAddKey(apiKey) {
-    const n = this.config.accounts.filter(a => a.name.startsWith('api-')).length + 1;
+    let n = 1;
+    while (this.config.accounts.some(a => a.name === `api-${n}`)) n++;
     const name = `api-${n}`;
-    this.config.accounts.push({ name, type: 'apikey', apiKey });
-    this.am.addAccount({ name, type: 'apikey', apiKey });
-    await this.saveConfig(this.config);
+    await this.saveConfig({ upsert: { name, type: 'apikey', apiKey: apiKey.trim() } });
+    await this.syncAccounts();
     this._addLog(`Added API key account "${name}"`);
   }
 
   async _doRemove(idx) {
     if (idx < 0 || idx >= this.am.accounts.length) return;
-    const name = this.am.accounts[idx].name;
-    this.am.removeAccount(idx);
-    this.config.accounts.splice(idx, 1);
+    const account = this.am.accounts[idx];
+    const name = account.name;
+    await this.saveConfig({ remove: account });
+    await this.syncAccounts({ removeMissing: true });
     if (this.selIdx >= this.am.accounts.length) this.selIdx = Math.max(0, this.am.accounts.length - 1);
-    await this.saveConfig(this.config);
     this._addLog(`Removed account "${name}"`);
   }
 
@@ -513,7 +494,7 @@ export class TUI {
       case 'add':
         return ` ${bold('i')}mport Codex CLI  ${bold('k')} API key  ${bold('Esc')} cancel`;
       case 'input':
-        return ` ${this.inputPrompt}: ${this.inputBuf}█`;
+        return ` ${this.inputPrompt}: ${'*'.repeat(this.inputBuf.length)}█`;
       default:
         return '';
     }
