@@ -8,7 +8,7 @@ Prerequisites:
 
 - **Mac:** install and start [Docker Desktop for Mac](https://docs.docker.com/desktop/setup/install/mac-install/), choosing the build for your processor.
 - **Ubuntu:** install `bubblewrap` for host Codex (`sudo apt install bubblewrap`), then install [Docker Engine and the Compose plugin](https://docs.docker.com/engine/install/ubuntu/). Configure Docker access for your regular user using Docker's [Linux post-install instructions](https://docs.docker.com/engine/install/linux-postinstall/), then sign in again if your group membership changed.
-- **Both:** Git, Bash, Python 3.9+ (for the session picker), and a host installation of [Codex CLI](https://developers.openai.com/codex/cli/). The proxy image includes Node.js; a host Node.js installation is only needed if your Codex installation method requires it or you develop TeamCodex.
+- **Both:** Git, Bash, Python 3.9+ (for updates and the session picker), and a host installation of [Codex CLI](https://developers.openai.com/codex/cli/). The proxy image includes Node.js; a host Node.js installation is only needed if your Codex installation method requires it or you develop TeamCodex.
 
 Verify Docker before installing:
 
@@ -171,11 +171,26 @@ Each attempt waits at most 60 seconds for headers and 120 seconds between respon
 
 When every account is unavailable, the proxy allows up to five seconds for a coalesced usage/reset recovery check, then returns a bounded response with `Retry-After`. Usage polling handles three accounts concurrently so one slow account does not block the whole pool. Fresh reduced usage can restore a throttled account. Request and buffered response bodies are limited to 32 MiB; individual SSE events to 1 MiB. Retry counts can be 0–5, timeouts 1–600 seconds. Restart after editing settings.
 
+## Updating
+
+From any directory, run:
+
+```bash
+teamcodex update
+```
+
+The command fast-forwards the installed checkout's current branch from its configured Git upstream, builds the new Docker image, and applies it with a health check. The existing service keeps running during the build; Compose replaces it when the image or service configuration changes. Existing accounts, configuration, and session history are retained. A stopped service starts after a successful build.
+
+Tracked local edits stop the update before pulling. Commit or stash those edits first. Local commits are retained; diverged branches require you to resolve the Git history. Untracked files are preserved, and Git refuses an update that would overwrite them. Updates to the same checkout are serialized with an automatically released lock. Git commands have a two-minute deadline, image builds ten minutes, and deployment waits up to two minutes for health. A failed build leaves the running service in place; a failed health check reports failure so you can inspect `teamcodex logs` and retry after fixing it.
+
+For an older installation that does not yet recognize `update`, run `git -C ~/teamcodex pull --ff-only`, then `~/teamcodex/teamcodex.sh update`. If an existing shell still invokes an older npm launcher, use `type -a teamcodex` and `rehash` (zsh) or `hash -r` (Bash) to refresh command lookup. The expected installed command is `~/.local/bin/teamcodex`, pointing to this checkout's `teamcodex.sh`.
+
 ## Commands
 
 | Command | Behavior |
 | --- | --- |
 | `teamcodex build` | Build the Docker image from this checkout |
+| `teamcodex update` | Fast-forward the installed checkout, rebuild, apply the image, and wait for service health |
 | `teamcodex serve` | Start in the background and wait for health; aliases: `start`, `server` |
 | `teamcodex stop` | Stop and remove the container and Compose network; retain host config |
 | `teamcodex restart` | Recreate the container and wait for health |
@@ -371,7 +386,7 @@ Tests cover concurrent config writes, reset backups and permissions, account rel
 - **Credential rejected or revoked:** run `teamcodex login --device-auth` again; the server reloads the replacement credentials.
 - **Unhealthy container:** inspect `teamcodex logs` and `teamcodex ps`. The health check verifies the local authenticated status endpoint; it does not spend tokens or confirm upstream model access.
 - **Automatic resets are not triggering:** check `teamcodex status` for the current usage, available credits, policy, and last result. A new redemption requires the threshold, confirmed credit availability, a known account ID, and an expired one-hour cooldown. Usage checks must succeed. Unknown availability is never treated as an available credit.
-- **An old npm command runs:** check `command -v teamcodex`; put `~/.local/bin` before an old global npm bin directory in PATH, or invoke this checkout's `./teamcodex.sh` explicitly.
+- **An old npm command runs or `resume` is unknown:** check `type -a teamcodex`; put `~/.local/bin` before an old global npm bin directory in PATH, then run `rehash` in zsh or `hash -r` in Bash. Existing shells can cache the old path after installation. You can also invoke `~/teamcodex/teamcodex.sh` explicitly.
 
 ## License
 

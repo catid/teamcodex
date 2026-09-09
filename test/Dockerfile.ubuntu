@@ -7,6 +7,6 @@ COPY package.json ./
 COPY src/ ./src/
 COPY test/ ./test/
 COPY teamcodex.sh ./
-COPY scripts/resume.py ./scripts/resume.py
+COPY scripts/resume.py scripts/update.py ./scripts/
 USER ubuntu
 CMD ["node", "--test"]

@@ -62,6 +62,14 @@ cli() {
 command_name="${1:-serve}"
 if [[ $# -gt 0 ]]; then shift; fi
 case "$command_name" in
+  update)
+    if [[ $# -ne 0 ]]; then echo 'Usage: teamcodex update' >&2; exit 2; fi
+    if ! command -v python3 >/dev/null 2>&1; then
+      echo 'Python 3 is required for teamcodex update.' >&2
+      exit 1
+    fi
+    exec python3 "$ROOT/scripts/update.py" "$ROOT"
+    ;;
   build) "${COMPOSE[@]}" build "$@" ;;
   serve|server|start) "${COMPOSE[@]}" up -d --wait "$@" ;;
   stop) "${COMPOSE[@]}" down "$@" ;;
@@ -138,6 +146,7 @@ case "$command_name" in
     ;;
   help|--help|-h)
     echo 'Docker: teamcodex build | serve | stop | restart | logs | ps'
+    echo 'Update: teamcodex update (pull latest, build, and wait for service health)'
     echo 'Host Codex: teamcodex run [--safe] [Codex arguments]'
     echo 'Sessions: teamcodex resume [Codex arguments] | fork [Codex arguments]'
     echo 'Reset: teamcodex reset (stops server; keeps accounts and creates a backup)'
