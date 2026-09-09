@@ -1,6 +1,6 @@
 # Usage-reset mock spike
 
-Run `bun test packages/proxy/test/usage-reset-spike.test.ts`. The 20 scenarios use real loopback
+Run `bun test packages/proxy/test/usage-reset-spike.test.ts`. The 26 scenarios use real loopback
 HTTP requests and temporary configuration transactions, with mock provider bodies
 and a controllable clock. No live credentials or provider reset credits are used.
 
@@ -20,6 +20,11 @@ Four initial regression assertions exposed three production defects:
 The malformed-JSON scenario also caught a mock-server double-response bug, which
 was fixed in the fixture rather than treated as a production defect.
 
+The follow-up spike exposed another recovery defect: when an additional quota
+window regained capacity, the monitor compared new utilization only with the old
+primary/secondary windows. It now includes the old additional windows so reduced
+usage can release throttling. A still-exhausted additional window prevents recovery.
+
 ## Assertions
 
 - Wrong-account usage cannot reserve credits, update quota, or confirm recovery.
@@ -33,6 +38,9 @@ was fixed in the fixture rather than treated as a production defect.
 - Oversized, unavailable and malformed usage cannot initiate a spend.
 - Shutdown interrupts retry while retaining the pending ID.
 - Failed persistence prevents the consume request entirely.
+- All four terminal outcomes preserve cumulative account request/token counters,
+  overlapping pool totals and overall totals; only the targeted account gets reset state.
+- Additional-window recovery works without credits and without a consume request.
 
 The mock's ID set represents one logical redemption. Actual exactly-once effects
 require the provider's idempotency contract; repeated HTTP attempts are expected.

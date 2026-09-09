@@ -207,7 +207,8 @@ export class UsageResetMonitor {
 
   applyUsage(account: Account, snapshot: UsageSnapshot, resetConfirmed = false): void {
     if (!this.manager.accounts.includes(account)) return;
-    const previousUsage = Math.max(account.quota.primary ?? 0, account.quota.secondary ?? 0);
+    const previousUsage = Math.max(account.quota.primary ?? 0, account.quota.secondary ?? 0,
+      ...(account.additionalQuota ?? []).map(window => window.utilization ?? 0));
     Object.assign(account.quota, snapshot.quota);
     account.additionalQuota = snapshot.additionalQuota || [];
     account.quotaUpdatedAt = new Date(snapshot.fetchedAt).toISOString();

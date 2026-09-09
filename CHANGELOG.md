@@ -13,3 +13,4 @@
 ### Fixed
 - Transient retries prefer untried pool members.
 - Usage reset responses and retries validate current account identity.
+- Accounts recover when additional quota windows regain capacity; reset outcomes preserve usage totals.

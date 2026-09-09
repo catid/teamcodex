@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { Config } from '@teamcodex/core/config';
+import { telemetry } from '@teamcodex/core/telemetry';
 import { afterEach, test } from 'bun:test';
 
 import { AccountManager } from '../src/account-manager.ts';
@@ -263,3 +264,46 @@ test('failed config reservation never reaches the local consume endpoint', async
   assert.equal(f.posts().length, 0);
   assert.equal(await f.state(), undefined);
 });
+
+for (const outcome of ['reset', 'already_redeemed', 'no_credit', 'nothing_to_reset']) {
+  test(`${outcome}: account redemption preserves account and overlapping pool usage counters`, async () => {
+    const f = await fixture();
+    f.manager.routing = { defaultPool: 'main', pools: {
+      main: { accounts: ['a', 'b'] }, shared: { accounts: ['a'] },
+    } };
+    f.manager.accounts.forEach((account, index) => {
+      account.usage = { totalRequests: 10 + index, totalInputTokens: 1000 + index,
+        totalOutputTokens: 200 + index, lastUsed: '2026-09-10T00:00:00.000Z' };
+    });
+    const before = telemetry(f.manager.getStatus());
+    let posted = false;
+    f.handlers.usage = id => payload(id, posted ? 0 : 100, posted ? 1 : 2);
+    f.handlers.consume = () => { posted = true; return { code: outcome }; };
+    await f.monitor.checkAccount(f.first);
+    const after = telemetry(f.manager.getStatus());
+    assert.equal(f.posts().length, 1);
+    assert.deepEqual(after.accounts.map(account => account.usage), before.accounts.map(account => account.usage));
+    assert.deepEqual(after.pools.map(pool => pool.totals), before.pools.map(pool => pool.totals));
+    assert.deepEqual(after.totals, before.totals);
+    assert.deepEqual(Object.keys(await f.state() ?? {}), ['chatgpt:a']);
+  });
+}
+
+for (const remaining of [0, 100]) {
+  test(`additional quota recovery at ${remaining}% requires capacity without spending credits`, async () => {
+    const f = await fixture();
+    f.first.status = 'throttled';
+    f.first.rateLimitedUntil = Date.now() + 3_600_000;
+    f.first.quota.primary = 0;
+    f.first.additionalQuota = [{ name: 'Special model (primary)', utilization: 1,
+      resetAt: null, windowMinutes: 60 }];
+    f.handlers.usage = id => ({ ...payload(id, 0, 0), additional_rate_limits: [{
+      limit_name: 'Special model', rate_limit: { primary_window: { used_percent: remaining } },
+    }] });
+    await f.monitor.checkAccount(f.first);
+    assert.equal(f.first.status, remaining === 0 ? 'active' : 'throttled');
+    if (remaining === 0) assert.equal(f.first.rateLimitedUntil, null);
+    assert.equal(f.posts().length, 0);
+    assert.equal(await f.state(), undefined);
+  });
+}

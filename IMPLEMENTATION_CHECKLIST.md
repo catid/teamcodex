@@ -99,3 +99,11 @@ item is unfinished; scaffolding or a renamed extension alone does not complete i
 
 - Final stage gate: 69 Bun tests and 138 legacy tests pass; compiler, lint, Knip
   and generated files pass. Node remains available for compatibility verification.
+
+### Usage-reset follow-up spike
+
+- Expanded loopback HTTP coverage to 26 cases, including preserved account/pool
+  counters across all terminal outcomes and recovery of additional quota windows.
+- Reproduced and fixed missed recovery when only an additional window was exhausted.
+- `bun run check` passes with Bun 1.4.2: 87 Bun tests, 126 legacy tests, strict
+  types, ESLint, Knip and generated errors. Full migration remains unfinished.
