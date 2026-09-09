@@ -7,7 +7,7 @@ A multi-account proxy for Codex CLI, with quota tracking, automatic account rota
 Prerequisites:
 
 - **Mac:** install and start [Docker Desktop for Mac](https://docs.docker.com/desktop/setup/install/mac-install/), choosing the build for your processor.
-- **Ubuntu:** install [Docker Engine and the Compose plugin](https://docs.docker.com/engine/install/ubuntu/). Configure Docker access for your regular user using Docker's [Linux post-install instructions](https://docs.docker.com/engine/install/linux-postinstall/), then sign in again if your group membership changed.
+- **Ubuntu:** install `bubblewrap` for host Codex (`sudo apt install bubblewrap`), then install [Docker Engine and the Compose plugin](https://docs.docker.com/engine/install/ubuntu/). Configure Docker access for your regular user using Docker's [Linux post-install instructions](https://docs.docker.com/engine/install/linux-postinstall/), then sign in again if your group membership changed.
 - **Both:** Git, Bash, and a host installation of [Codex CLI](https://developers.openai.com/codex/cli/). The proxy image includes Node.js; a host Node.js installation is only needed if your Codex installation method requires it or you develop TeamCodex.
 
 Verify Docker before installing:
@@ -75,6 +75,8 @@ Use `/usr/local` instead of `/opt/homebrew` for Intel Homebrew. The boot install
 The regular commands remain `teamcodex start`, `teamcodex stop`, and `teamcodex restart` on both platforms. With the optional boot unit installed, a manual stop lasts until you start it again or reboot. To disable boot startup, use `sudo systemctl disable --now teamcodex` on Ubuntu, or `sudo launchctl bootout system/com.teamcodex.boot` followed by `sudo launchctl disable system/com.teamcodex.boot` on Colima macOS. Mac boot logs are under `~/Library/Logs/TeamCodex/`.
 
 Each machine can keep independent credentials and operate without depending on another machine. Copies of the same OAuth login can later diverge when refresh tokens rotate; if needed, re-login on that machine or securely copy a current config/account login again. Keep config and backups private (mode 600); account reset cooldowns are local to each install.
+
+For Linux sandbox warnings, follow the [Codex sandbox prerequisites](https://developers.openai.com/codex/concepts/sandboxing#prerequisites). Ubuntu 24.04 may also need the distribution's `bwrap-userns-restrict` AppArmor profile loaded. If Codex reports missing metadata for a supported model, update the host Codex CLI (`codex update` for standalone installations, or update the npm package for npm installations), then retry.
 
 ## Accounts and login
 
