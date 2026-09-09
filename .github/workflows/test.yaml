@@ -19,6 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Exercise image startup even when the checkout has owner-only permissions.
+      - run: chmod -R go-rwx package.json src
       - run: docker build -t teamcodex:local .
+      - run: docker run --rm --read-only --user 12345:12345 teamcodex:local help
       - run: docker build -f test/Dockerfile.ubuntu -t teamcodex-test:ubuntu .
       - run: docker run --rm teamcodex-test:ubuntu

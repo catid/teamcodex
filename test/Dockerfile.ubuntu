@@ -8,5 +8,6 @@ COPY src/ ./src/
 COPY test/ ./test/
 COPY teamcodex.sh ./
 COPY scripts/resume.py scripts/update.py ./scripts/
+RUN chmod -R a+rX /workspace
 USER ubuntu
 CMD ["node", "--test"]
