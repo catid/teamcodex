@@ -86,7 +86,7 @@ async function boundedJSON(response) {
 }
 
 function errorCode(err) {
-  return ['USAGE_HTTP_ERROR', 'USAGE_INVALID', 'USAGE_RESPONSE_TOO_LARGE', 'USAGE_RESPONSE_INVALID'].includes(err?.code)
+  return ['USAGE_HTTP_ERROR', 'USAGE_INVALID', 'USAGE_RESPONSE_TOO_LARGE', 'USAGE_RESPONSE_INVALID', 'USAGE_ACCOUNT_MISMATCH'].includes(err?.code)
     ? err.message : errorMessage('USAGE_PROVIDER_UNAVAILABLE');
 }
 
@@ -179,7 +179,7 @@ export class UsageResetMonitor {
     const accountId = account.accountId;
     for (let attempt = 0; ; attempt++) {
       this.controller.signal.throwIfAborted();
-      if (!this.manager.accounts.includes(account) || account.accountId !== accountId || account.credential !== credential) {
+      if (account.enabled === false || !this.manager.accounts.includes(account) || account.accountId !== accountId || account.credential !== credential) {
         throw createError('ACCOUNT_CHANGED');
       }
       try {
@@ -195,7 +195,11 @@ export class UsageResetMonitor {
           },
           ...(body ? { body: JSON.stringify(body) } : {}),
         });
-        return await boundedJSON(response);
+        const payload = await boundedJSON(response);
+        // A response can finish after reload or disable; never apply it to changed credentials.
+        if (account.enabled === false || !this.manager.accounts.includes(account) ||
+            account.accountId !== accountId || account.credential !== credential) throw createError('ACCOUNT_CHANGED');
+        return payload;
       } catch (err) {
         const status = /^http_(\d{3})$/.exec(err.message)?.[1];
         if (attempt >= 2 || this.controller.signal.aborted ||
@@ -210,9 +214,10 @@ export class UsageResetMonitor {
     const accountId = account.accountId;
     const credential = account.credential;
     const payload = await this.request(account, USAGE_PATH);
-    if (!this.manager.accounts.includes(account) || account.accountId !== accountId || account.credential !== credential) {
+    if (account.enabled === false || !this.manager.accounts.includes(account) || account.accountId !== accountId || account.credential !== credential) {
       throw createError('ACCOUNT_CHANGED');
     }
+    if (payload?.account_id != null && payload.account_id !== accountId) throw createError('USAGE_ACCOUNT_MISMATCH');
     const snapshot = normalizeUsage(payload, this.now());
     this.snapshots.set(snapshot, { account, accountId, credential });
     return snapshot;
@@ -307,6 +312,7 @@ export class UsageResetMonitor {
 
   async redeem(account, reservation) {
     const accountId = account.accountId;
+    const credential = account.credential;
     const stateKey = `chatgpt:${accountId}`;
     let result = errorMessage('USAGE_PROVIDER_UNAVAILABLE');
     let settled = false;
@@ -338,7 +344,7 @@ export class UsageResetMonitor {
       state.lastResult = result;
       if (settled) delete state.pendingRequestId;
       if (result === 'completed') state.lastCompletedAt = new Date(this.now()).toISOString();
-      if (account.accountId === accountId) account.usageReset = { ...account.usageReset, ...this.publicState(state) };
+      if (this.manager.accounts.includes(account) && account.accountId === accountId && account.credential === credential) account.usageReset = { ...account.usageReset, ...this.publicState(state) };
     });
     if (!settled && this.timer && !this.pendingTimer && !this.controller.signal.aborted) {
       this.pendingTimer = setTimeout(() => {

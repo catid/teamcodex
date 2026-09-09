@@ -45,6 +45,7 @@ export const ERROR_CODES = Object.freeze({
   UPSTREAM_RESPONSE_TOO_LARGE: { opcode: 3101, message: 'Upstream response exceeds 32 MiB' },
   SSE_EVENT_TOO_LARGE: { opcode: 3102, message: 'SSE event buffer exceeds 1 MiB' },
   UPSTREAM_STREAM_EMPTY: { opcode: 3103, message: 'Upstream stream terminated before any events' },
+  USAGE_ACCOUNT_MISMATCH: { opcode: 4009, message: 'usage_account_mismatch' },
   USAGE_INVALID: { opcode: 4001, message: 'invalid_usage_response' },
   USAGE_HTTP_ERROR: { opcode: 4002, message: 'http_{status}' },
   USAGE_RESPONSE_TOO_LARGE: { opcode: 4003, message: 'response_too_large' },

@@ -79,6 +79,7 @@ native TypeError to avoid recursively calling a broken registry.
 | 4006 | `USAGE_PROVIDER_UNAVAILABLE` | provider_unavailable |
 | 4007 | `USAGE_REFRESH_FAILED` | refresh_failed |
 | 4008 | `USAGE_UNKNOWN_OUTCOME` | unknown_outcome |
+| 4009 | `USAGE_ACCOUNT_MISMATCH` | usage_account_mismatch |
 | 5001 | `SMOKE_CONFIG_MISSING` | Initialize TeamCodex before running the smoke test |
 | 5002 | `SMOKE_ACCOUNTS_MISSING` | Rotation smoke test requires at least two accounts |
 | 5003 | `SMOKE_HTTP_ERROR` | Hello request failed: HTTP {status} |

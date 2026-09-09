@@ -44,3 +44,9 @@ Pool totals, weights, and routing thresholds cannot authorize a reset. Explicit
 provider denial (`allowed: false` or `limit_reached: true`) prevents reactivation
 even if the reported utilization drops below 100 percent after a reset.
 These are source-backed mock checks; no live reset credits were consumed.
+
+The [usage-reset HTTP spike](usage-reset-spike.md) additionally verifies that any
+provider-supplied `account_id` matches the requested account. Wire retries and late
+responses recheck enabled state, membership and credentials. Responses from changed
+accounts leave the original pending ID intact and cannot overwrite replacement
+account metrics.
