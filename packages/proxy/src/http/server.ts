@@ -89,13 +89,14 @@ export function createProxyServer(accountManager: AccountManager, config: Config
       // Track request
       const reqId = ++requestCounter;
       const requestStarted = performance.now();
-      const ctx: RequestContext = { account: null, accountRef: null, status: null, attempts: 0, excluded: new Set(), poolName, networkRetries: 0, recovered: false, refreshed: new Set() };
+      const ctx: RequestContext = { account: null, accountRef: null, status: null, attempts: 0, excluded: new Set(), poolName, maxAccountRetries: accountManager.accounts.length * 2, networkRetries: 0, recovered: false, refreshed: new Set() };
       let recorded = false;
       const recordRequest = () => {
         if (recorded) return;
         recorded = true;
         accountManager.stats?.recordRequest({ status: res.statusCode, disconnected: !res.writableFinished,
           durationMs: performance.now() - requestStarted }, ctx.accountRef);
+        hooks.onRequestEnd?.(reqId, { method: req.method, path: req.url, account: ctx.account, status: ctx.status ?? res.statusCode });
       };
       res.once('finish', recordRequest);
       res.once('close', recordRequest);
@@ -126,13 +127,9 @@ export function createProxyServer(accountManager: AccountManager, config: Config
         } else {
           res.destroy();
         }
-      } finally {
-        hooks.onRequestEnd?.(reqId, {
-          method: req.method, path: req.url,
-          account: ctx.account, status: ctx.status,
-        });
       }
     } catch (err) {
+      if (res.destroyed) return;
       console.error(errorMessage('UNHANDLED_ERROR'), err);
     }
   });

@@ -32,9 +32,10 @@ export async function resolveAccounts(config: Config): Promise<AccountConfig[]> 
 
 export async function syncAccountsFromDisk(diskConfig: Config, memConfig: Config, manager: AccountManager, { removeMissing = false }: { removeMissing?: boolean } = {}) {
   let added = 0, updated = 0, removed = 0;
+  // Resolve all imports before publishing routing and account changes together.
+  const resolved = await resolveAccounts(diskConfig);
   manager.routing = diskConfig.routing;
   manager.switchThreshold = diskConfig.switchThreshold ?? 0.98;
-  const resolved = await resolveAccounts(diskConfig);
   for (const account of resolved) {
     const idx = findConfigAccount(manager, account);
     if (idx < 0) {
@@ -45,13 +46,18 @@ export async function syncAccountsFromDisk(diskConfig: Config, memConfig: Config
     }
     let live = manager.accounts[idx];
     if (!live) continue;
+    const metadata = { weight: account.weight ?? 1, enabled: account.enabled ?? true,
+      switchThreshold: account.switchThreshold, name: account.name,
+      type: account.type, accountId: account.accountId || null, planType: account.planType || null };
+    const current = live;
+    let accountUpdated = Object.entries(metadata).some(([key, value]) => Reflect.get(current, key) !== value);
     if (live.type !== account.type || live.accountId !== (account.accountId || null)) {
       // Reusing a display name for another identity must not inherit its quota,
       // pending refresh, reset state, or in-flight response updates.
       live.index = -1;
       live = manager._buildAccount(account, idx);
       manager.accounts[idx] = live;
-      updated++;
+      accountUpdated = true;
     }
     const credential = account.type === 'apikey' ? account.apiKey : account.accessToken;
     const stale = account.type === 'chatgpt' && account.expiresAt && live.expiresAt &&
@@ -69,15 +75,10 @@ export async function syncAccountsFromDisk(diskConfig: Config, memConfig: Config
       live.idToken = account.idToken || null;
       live.expiresAt = account.expiresAt || null;
       if (live.status === 'error') live.status = 'active';
-      updated++;
+      accountUpdated = true;
     }
-    live.weight = account.weight ?? 1;
-    live.enabled = account.enabled ?? true;
-    live.switchThreshold = account.switchThreshold;
-    live.name = account.name;
-    live.type = account.type;
-    live.accountId = account.accountId || null;
-    live.planType = account.planType || null;
+    Object.assign(live, metadata);
+    if (accountUpdated) updated++;
     memConfig.accounts[idx] = {
       ...account,
       ...(account.type === 'chatgpt' ? {
@@ -96,5 +97,8 @@ export async function syncAccountsFromDisk(diskConfig: Config, memConfig: Config
       }
     }
   }
+  if (manager.routing) memConfig.routing = manager.routing;
+  else delete memConfig.routing;
+  memConfig.switchThreshold = manager.switchThreshold;
   return { added, updated, removed };
 }

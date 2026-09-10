@@ -23,6 +23,7 @@ export interface RequestContext {
   attempts: number;
   excluded: Set<Account>;
   poolName: string | undefined;
+  maxAccountRetries: number;
   networkRetries: number;
   recovered: boolean;
   refreshed: Set<Account>;

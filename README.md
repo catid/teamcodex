@@ -89,7 +89,7 @@ teamcodex accounts
 teamcodex status
 ```
 
-Sign into a different ChatGPT account for each login. If the browser has kept the previous account signed in, switch accounts there before authorizing. Re-authorizing the same account updates it. Every configured account participates in rotation immediately; no service restart is needed.
+Sign into a different ChatGPT account for each login. If the browser has kept the previous account signed in, switch accounts there before authorizing. Re-authorizing the same account updates it. New enabled accounts participate in unpooled rotation immediately; no service restart is needed. With explicit pools, add the account name to the intended pool and reload before it can receive traffic.
 
 Each proxy startup creates an independently shuffled rotation order and starts with its first account. The proxy follows that order when quota limits, rejected credentials, or transient failures require another account. Added accounts enter a random position; config and display order stay unchanged. This spreads starting accounts across independent machines without coordination. A healthy active account continues serving until rotation is needed, preserving connection reuse. `teamcodex status` includes the current `rotationOrder`.
 
@@ -136,7 +136,7 @@ TeamCodex checks every ChatGPT account at startup and every five minutes, includ
 
 The threshold applies separately to each account's own usage and credit balance. Pool averages, the number of accounts polled, and the currently selected account do not determine eligibility. For example, if account A is at 99% and account B is at 20%, only A qualifies for a new redemption, using A's credits and credentials. Conversely, an account at 97.99% remains ineligible even when the pool average exceeds 98%. The check uses the highest utilization across that account's reported windows, including its five-hour and weekly windows.
 
-This implements the provider contract inspected in [Bifrost's ChatGPT reset controller](https://github.com/c0ldfront/bifrost/blob/fa8ee27/deploy/oauth/pi-account.mjs) and its [reset policies](https://github.com/c0ldfront/bifrost/blob/fa8ee27/plugins/oauthprovider/README.md). TeamCodex uses a threshold for each account, fitting its account rotation model.
+The provider contract, reviewed official Codex source revision, and local fixture evidence are recorded in [authentication references](docs/authentication.md#account-usage-reset-contract). TeamCodex applies the reset threshold separately to each account.
 
 The defaults are enabled, including when an older config omits this section:
 
@@ -213,6 +213,8 @@ For an older installation that does not yet recognize `update`, run `git -C ~/te
 | `teamcodex env` | Print a shell command for host Codex, including the proxy key |
 | `teamcodex api PATH` | Call an upstream endpoint directly with a configured account |
 | `teamcodex help` | Show command help |
+
+`api` accepts paths or absolute URLs on the selected account's configured upstream origin. It returns redirects without following them and limits requests to 30 seconds.
 
 Arguments pass through to Codex without shell evaluation:
 
@@ -319,7 +321,7 @@ see [routing configuration](docs/routing.md). Follow-up work is tracked in [ROAD
 
 ChatGPT entries store `accessToken`, `refreshToken`, `idToken`, `accountId`, `expiresAt` (milliseconds), and optional `planType` and `source`. An `importFrom` entry loads its credential file if stored credentials are absent. API entries store `apiKey`. Files referred to by `importFrom` must be available inside Docker; `~/.codex/auth.json` maps to the mounted Codex auth directory.
 
-Account changes hot-reload. Changes to proxy keys, origins, thresholds, or automatic-reset settings require `teamcodex restart`. Change Docker's host port through `TEAMCODEX_PORT`.
+Account credentials and metadata, `switchThreshold`, and routing pools hot-reload. CLI account changes trigger a reload; after editing config directly, use the native TUI's `R` key or the authenticated `POST /teamcodex/reload` endpoint. Changes to proxy keys, listener settings, upstream origins, global concurrency, retry policy, logging, or automatic-reset settings require `teamcodex restart`. Change Docker's host port through `TEAMCODEX_PORT`.
 
 ### Reset and migrate an installation
 
@@ -381,7 +383,7 @@ bun apps/cli/src/index.ts run --safe
 
 Native config defaults to `~/.config/teamcodex.json` or `$XDG_CONFIG_HOME/teamcodex.json`, overridden by `TEAMCODEX_CONFIG`. Native listening defaults to `127.0.0.1`. Native loopback clients are accepted without a proxy key; other connections require the key. Docker always requires it.
 
-A native server attached to a terminal displays the interactive dashboard. Keys: `s` switches accounts, `a` adds an account, `r` removes one, `R` reloads additions/changes/removals, and `q` quits. Use arrows or `j`/`k`, Enter, and Escape in selections. API key paste is supported and input is masked. Docker runs without the TUI; use `status` and `logs`.
+A native server attached to a terminal displays the interactive dashboard. Keys: `s` switches accounts when no routing pools are configured, `a` adds an account, `r` removes one, `R` reloads additions/changes/removals, and `q` quits. With pools configured, edit pool membership or strategy and reload to change account selection. Use arrows or `j`/`k`, Enter, and Escape in selections. API key paste is supported and input is masked. Docker runs without the TUI; use `status` and `logs`.
 
 Full request/response logging is available with native `serve --log-to DIR`. To enable it in Docker, set `"logDir": "/config/requests"` in config and restart. Request logs may include prompts, model output, and account metadata. Keep them private. Docker's normal service logs rotate at 10 MB, keeping three files.
 

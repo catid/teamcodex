@@ -3,7 +3,7 @@ import { telemetry } from '@teamcodex/core/telemetry';
 
 import type { TUI } from './controller.ts';
 import { dashboard, usagePanel } from './panels.ts';
-import { bar,bold, cyan, dim, ESC, fitLine, gray, green, red, rpad, vw, yellow } from './style.ts';
+import { bar,bold, cyan, dim, ESC, fitLine, gray, green, plainText, red, rpad, vw, yellow } from './style.ts';
 import { usageLines } from './usage.ts';
 
 export function render(this: TUI): void {
@@ -65,7 +65,7 @@ export function renderAccount(this: TUI, idx: number, bw: number, showBoth: bool
   const cur = isCur ? green('►') : ' ';
 
   // Name (bold if selected)
-  const rawName = a.name.slice(0, 12).padEnd(12);
+  const rawName = plainText(a.name).slice(0, 12).padEnd(12);
   const name = isSel ? bold(rawName) : rawName;
 
   // Type — show plan for ChatGPT accounts
@@ -81,7 +81,7 @@ export function renderAccount(this: TUI, idx: number, bw: number, showBoth: bool
     case 'throttled': status = yellow('throttled'); break;
     case 'exhausted': status = red('exhausted'); break;
     case 'error':     status = red('auth error'); break;
-    default:          status = a.status || 'ready';
+    default:          status = plainText(a.status || 'ready');
   }
   status = rpad(status, 10);
 
@@ -118,9 +118,11 @@ export function renderAccount(this: TUI, idx: number, bw: number, showBoth: bool
 export function renderFooter(this: TUI): string {
   switch (this.mode) {
     case 'usage': return ' ↑↓ scroll  u/Esc back';
-    case 'normal':
-      if ((process.stdout.columns || 80) < 70) return ' u usage  s switch  a add  r remove  R reload  q quit';
-      return ` ${bold('u')}sage  ${bold('s')}witch  ${bold('a')}dd  ${bold('r')}emove  ${bold('R')}eload  ${bold('q')}uit`;
+    case 'normal': {
+      if ((process.stdout.columns || 80) < 70) return ` u usage  ${this.am.routing ? '' : 's switch  '}a add  r remove  R reload  q quit`;
+      const switchAction = this.am.routing ? '' : `${bold('s')}witch  `;
+      return ` ${bold('u')}sage  ${switchAction}${bold('a')}dd  ${bold('r')}emove  ${bold('R')}eload  ${bold('q')}uit`;
+    }
     case 'select': {
       const act = this.selAction === 'switch' ? 'switch' : 'remove';
       return ` ${dim('↑↓')} select  ${bold('Enter')} ${act}  ${bold('Esc')} cancel`;

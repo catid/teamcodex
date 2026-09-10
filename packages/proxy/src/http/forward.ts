@@ -23,9 +23,10 @@ function buildUpstreamUrl(account: Account, reqUrl: string, upstreams: Upstreams
 }
 
 export async function forwardRequest(req: IncomingMessage, res: ServerResponse, body: Buffer<ArrayBuffer>, accountManager: AccountManager, upstreams: Upstreams, retryCount: number, hooks: ProxyHooks, reqId: number, ctx: RequestContext, logDir: string | null): Promise<void> {
-  const maxRetries = accountManager.accounts.length * 2;
+  const maxRetries = ctx.maxAccountRetries;
 
   if (res.destroyed || res.writableEnded) return;
+  if (ctx.poolName !== undefined && !Object.hasOwn(accountManager.routing?.pools ?? {}, ctx.poolName)) return writeRoutingChanged(res, ctx);
   // A bounded recovery check can return an account to service after a reset.
   let account = accountManager.getActiveAccount(ctx.poolName, ctx.excluded);
   if (!account && !ctx.recovered && hooks.onAccountsUnavailable) {
@@ -46,6 +47,7 @@ export async function forwardRequest(req: IncomingMessage, res: ServerResponse, 
       if (onClose) res.removeListener('close', onClose);
     }
     if (res.destroyed) return;
+    if (ctx.poolName !== undefined && !Object.hasOwn(accountManager.routing?.pools ?? {}, ctx.poolName)) return writeRoutingChanged(res, ctx);
     account = accountManager.getActiveAccount(ctx.poolName, ctx.excluded);
   }
   if (!account) {
@@ -73,8 +75,9 @@ export async function forwardRequest(req: IncomingMessage, res: ServerResponse, 
 
     // Refresh token if needed
     await accountManager.ensureTokenFresh(account);
-    if ((['error', 'throttled'].includes(account.status) || !accountManager.accounts.includes(account)) && retryCount < maxRetries) {
+    if (!accountManager.isAccountEligible(account, ctx.poolName)) {
       lease.release();
+      if (retryCount >= maxRetries) return writeRoutingChanged(res, ctx);
       return forwardRequest(req, res, body, accountManager, upstreams, retryCount + 1, hooks, reqId, ctx, logDir);
     }
 
@@ -99,7 +102,8 @@ export async function forwardRequest(req: IncomingMessage, res: ServerResponse, 
     // let the client's own chatgpt-account-id leak through with our token — if
     // we don't have an account id, drop it so the backend uses the token's own.
     delete headers['x-teamcodex-pool'];
-    headers['authorization'] = `Bearer ${account.credential}`;
+    const credential = account.credential;
+    headers['authorization'] = `Bearer ${credential}`;
     if (account.type === 'chatgpt' && account.accountId) {
       headers['chatgpt-account-id'] = account.accountId;
     } else {
@@ -183,16 +187,13 @@ export async function forwardRequest(req: IncomingMessage, res: ServerResponse, 
         await upstreamRes.body?.cancel();
         clearTimeout(timeout);
         if (logDir) logSections.push('=== RESPONSE 401 — forcing token refresh ===');
-        if (account.type === 'chatgpt' && account.refreshToken && !ctx.refreshed.has(account)) {
-          ctx.refreshed.add(account);
-          console.log(`[TeamCodex] 401 on "${account.name}" — forcing token refresh`);
-          const prevCredential = account.credential;
-          await accountManager.ensureTokenFresh(account, true);
-          if (account.credential === prevCredential && account.status === 'active') {
-            accountManager.markAuthFailed(account);
-          }
-        } else {
-          accountManager.markAuthFailed(account);
+        if (account.credential === credential) {
+          if (account.type === 'chatgpt' && account.refreshToken && !ctx.refreshed.has(account)) {
+            ctx.refreshed.add(account);
+            console.log(`[TeamCodex] 401 on "${account.name}" — forcing token refresh`);
+            await accountManager.ensureTokenFresh(account, true);
+            if (account.credential === credential && account.status === 'active') accountManager.markAuthFailed(account);
+          } else accountManager.markAuthFailed(account);
         }
         lease.observe(failed, headerLatency);
         lease.release();
@@ -361,3 +362,8 @@ export async function forwardRequest(req: IncomingMessage, res: ServerResponse, 
   }
 }
 
+function writeRoutingChanged(res: ServerResponse, ctx: RequestContext): void {
+  ctx.status = 503;
+  res.writeHead(503, { 'content-type': 'application/json', 'retry-after': '1' });
+  res.end(JSON.stringify(errorResponse('ROUTING_CHANGED')));
+}

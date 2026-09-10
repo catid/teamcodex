@@ -73,14 +73,19 @@ export async function apiCommand(args: string[]): Promise<void> {
   const upstream = account.type === 'chatgpt'
     ? (config.upstream || 'https://chatgpt.com')
     : (config.apiUpstream || 'https://api.openai.com');
-  const url = path.startsWith('http') ? path : `${upstream}${path}`;
+  const base = new URL(upstream);
+  let url: URL;
+  const endpoint = path.startsWith('/') && !path.startsWith('//') ? `.${path}` : path;
+  try { url = new URL(endpoint, `${upstream.replace(/\/$/, '')}/`); }
+  catch { throw createError('API_DESTINATION_INVALID'); }
+  if (url.origin !== base.origin || url.username || url.password) throw createError('API_DESTINATION_INVALID');
 
   const headers: Record<string, string> = { 'Authorization': `Bearer ${credential}` };
   if (account.type === 'chatgpt' && account.accountId) {
     headers['chatgpt-account-id'] = account.accountId;
   }
 
-  const fetchOpts: RequestInit = { method, headers };
+  const fetchOpts: RequestInit = { method, headers, redirect: 'manual', signal: AbortSignal.timeout(30_000) };
   if (data) {
     headers['Content-Type'] = 'application/json';
     fetchOpts.body = data;

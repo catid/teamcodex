@@ -53,15 +53,15 @@ item is unfinished; scaffolding or a renamed extension alone does not complete i
 - [x] Docker permissions/lifecycle/streaming and offline OAuth E2E pass.
 - [x] Real TUI screenshot states pass and are visually reviewed.
 - [x] Package dependencies are declared; core cannot import proxy or CLI.
-- [ ] Integrate upstream hardening commit 21e16a7 into typed modules and migrate its regression tests.
-- [ ] Re-run final gates and review the integrated diff for behavior changes, stale files and secrets.
+- [x] Integrate upstream hardening commit 21e16a7 into typed modules and migrate its regression tests.
+- [x] Re-run final gates and review the integrated diff for behavior changes, stale files and secrets.
 
 ## Verified migration stage (2026-09-10)
 
 - Bun 1.4.2 frozen installation succeeds in a fresh directory with isolated linking.
-- Local `bun run check`: 212 tests pass, strict compiler, ESLint, Knip and generated errors.
+- Local `bun run check`: 239 tests pass, strict compiler, ESLint, Knip and generated errors.
 - Fresh-copy checks pass with only the checkout-specific Git-ignore test skipped.
-- Ubuntu Bun image: 211 pass, one Git-ignore test skipped because `.git` is excluded.
+- Ubuntu Bun image: 238 pass, one Git-ignore test skipped because `.git` is excluded.
 - Offline OAuth: six flows pass. Docker: 12 lifecycle scenarios pass, including cleanup.
 - Native Bun PTY: all 20 screenshot states pass; gallery and focused small/usage/login
   captures visually reviewed. Native PTY input waits for menu transitions and resize
@@ -75,5 +75,8 @@ The previous Node runner counted the configuration suite wrapper as a test. Bun
 counts the seven assertions beneath it; migration retained their behavior coverage.
 The two pre-existing account concurrency tests remain in `account-concurrency.test.ts`.
 
-Upstream moved to `21e16a7` during the final audit. Its credential/routing/terminal
-hardening must be preserved in the typed implementation before completion.
+Upstream `21e16a7` is integrated. All upstream regression test titles have typed
+counterparts; credential/routing/terminal hardening and reset disable checks pass.
+A fresh isolated install exposed transitive TypeScript declaration resolution; the
+tooling project explicitly resolves the TypeScript 6 API while TypeScript 7 compiles
+the project. Fresh frozen checks and a forced rebuild pass without relaxed checks.

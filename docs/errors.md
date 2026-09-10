@@ -55,6 +55,7 @@ native TypeError to avoid recursively calling a broken registry.
 | 2018 | `OAUTH_NOT_FOUND` | Not found |
 | 2019 | `OAUTH_PKCE_INVALID` | OAuth response is missing a valid authorization code or PKCE verifier |
 | 2020 | `DEVICE_RESPONSE_INVALID` | Device authorization response is missing its device ID or user code |
+| 2021 | `OAUTH_CALLBACK_INVALID` | Invalid callback request URL |
 | 3001 | `INVALID_PROXY_KEY` | Invalid proxy API key |
 | 3002 | `RELOAD_UNSUPPORTED` | Reload not supported by this server |
 | 3003 | `RELOAD_FAILED` | {message} |
@@ -68,6 +69,7 @@ native TypeError to avoid recursively calling a broken registry.
 | 3011 | `PROXY_OVERLOADED` | Proxy concurrency limit reached; retry later |
 | 3012 | `STATUS_ARGUMENTS_INVALID` | Usage: teamcodex status [--compact \| --json] [--no-color] |
 | 3013 | `STATUS_READ_FAILED` | Cannot read TeamCodex status ({message}). Check teamcodex ps or start with teamcodex serve. |
+| 3014 | `ROUTING_CHANGED` | Routing changed while preparing the request; retry later |
 | 3101 | `UPSTREAM_RESPONSE_TOO_LARGE` | Upstream response exceeds 32 MiB |
 | 3102 | `SSE_EVENT_TOO_LARGE` | SSE event buffer exceeds 1 MiB |
 | 3103 | `UPSTREAM_STREAM_EMPTY` | Upstream stream terminated before any events |
@@ -88,6 +90,7 @@ native TypeError to avoid recursively calling a broken registry.
 | 6001 | `ARGUMENT_VALUE_MISSING` | {argument} requires a value |
 | 6002 | `PROXY_HTTP_ERROR` | HTTP {status} |
 | 6003 | `ACCOUNT_NOT_FOUND` | Account "{name}" not found |
+| 6004 | `API_DESTINATION_INVALID` | API destination must use the configured upstream origin without URL credentials |
 | 7001 | `UNKNOWN_COMMAND` | Unknown command: {command}&lt;br> |
 | 7002 | `NO_ACCOUNTS` | No accounts configured.&lt;br> |
 | 7003 | `NO_VALID_ACCOUNTS` | No valid accounts after initialization |
@@ -116,6 +119,7 @@ native TypeError to avoid recursively calling a broken registry.
 | 8002 | `TUI_ADD_FAILED` | Add failed: {message} |
 | 8003 | `TUI_SYNC_FAILED` | Sync failed: {message} |
 | 8004 | `TUI_IMPORT_FAILED` | Import failed: {message} |
+| 8005 | `TUI_SWITCH_POOLED` | Account selection is controlled by routing pools. Edit pool membership or strategy to change routing. |
 | 9001 | `DOCKER_REQUIRED` | Docker with the Compose plugin is required. See README.md for macOS and Ubuntu setup. |
 | 9002 | `DOCKER_UNAVAILABLE` | Docker is not running or your user cannot access it. Start Docker and retry. |
 | 9003 | `HOST_CODEX_REQUIRED` | Install Codex CLI on the host before using teamcodex run. |

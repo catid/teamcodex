@@ -3,6 +3,7 @@ import { preserveAccountRouting } from '@teamcodex/core/routing';
 import { AccountManager } from '@teamcodex/proxy/account-manager';
 import { findConfigAccount, resolveAccounts, syncAccountsFromDisk } from '@teamcodex/proxy/accounts';
 import { updateCodexAuthIfMatching } from '@teamcodex/proxy/auth/persistence';
+import { importCredentials } from '@teamcodex/proxy/auth/tokens';
 import { atomicConfigUpdate, getConfigPath, loadConfig, loadOrCreateConfig } from '@teamcodex/proxy/config';
 import type { ProxyHooks } from '@teamcodex/proxy/http/types';
 import { createProxyServer } from '@teamcodex/proxy/server';
@@ -42,22 +43,30 @@ export async function serveCommand(args: string[]): Promise<void> {
 
   // Persist refreshed tokens back to config (re-read from disk to avoid clobbering
   // accounts added externally, e.g. by `teamcodex import` while server is running)
-  accountManager.onTokenRefresh(async (idx, newTokens, previousRefreshToken) => {
+  accountManager.onTokenRefresh(async (idx, newTokens, previousRefreshToken, previousCredential) => {
     const account = accountManager.accounts[idx];
     if (!account) return;
-    const memIdx = findConfigAccount(config, account);
-    const memory = config.accounts[memIdx];
-    if (memory) Object.assign(memory, newTokens);
+    const isCurrent = () => accountManager.accounts.includes(account) &&
+      account.credential === newTokens.accessToken && account.refreshToken === newTokens.refreshToken;
     let persisted = false;
-    await atomicConfigUpdate(diskConfig => {
-      const cfgIdx = findConfigAccount(diskConfig, account);
-      const diskAccount = diskConfig.accounts[cfgIdx];
-      if (diskAccount && (!diskAccount.refreshToken || diskAccount.refreshToken === previousRefreshToken)) {
-        Object.assign(diskAccount, newTokens);
-        persisted = true;
+    await atomicConfigUpdate(async diskConfig => {
+      if (!isCurrent()) return;
+      const diskAccount = diskConfig.accounts[findConfigAccount(diskConfig, account)];
+      if (!diskAccount || diskAccount.type !== 'chatgpt') return;
+      let stored = diskAccount;
+      if (stored.importFrom && !stored.accessToken) {
+        try { stored = { ...stored, ...await importCredentials(stored.importFrom === '~/.codex/auth.json' ? undefined : stored.importFrom) }; }
+        catch { return; }
       }
+      if (!isCurrent() || (stored.accountId || null) !== account.accountId ||
+          stored.accessToken !== previousCredential || stored.refreshToken !== previousRefreshToken) return;
+      Object.assign(diskAccount, newTokens);
+      persisted = true;
     });
-    if (persisted) await updateCodexAuthIfMatching(account, newTokens);
+    if (!persisted || !isCurrent()) return;
+    const memory = config.accounts[findConfigAccount(config, account)];
+    if (memory) Object.assign(memory, newTokens);
+    await updateCodexAuthIfMatching(account, newTokens, previousRefreshToken, previousCredential, isCurrent);
   });
   const port = Number(process.env.TEAMCODEX_LISTEN_PORT || config.proxy.port);
   const useTUI = process.stdout.isTTY && process.stdin.isTTY;

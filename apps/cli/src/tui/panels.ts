@@ -9,7 +9,7 @@ interface Dashboard {
 }
 import { telemetry } from '@teamcodex/core/telemetry';
 
-import { cyan, dim, fitLine } from './style.ts';
+import { cyan, dim, fitLine, plainText } from './style.ts';
 
 export function panel(title: string, content: string[], width: number, height: number): string[] {
   const top = `╭─ ${title} ${'─'.repeat(Math.max(0, width - title.length - 5))}╮`;
@@ -19,7 +19,7 @@ export function panel(title: string, content: string[], width: number, height: n
 
 export function dashboard(tui: Dashboard, width: number, height: number): string[] {
   const view = telemetry(tui.am.getStatus());
-  if (height < 8) return panel('Accounts', view.accounts.slice(0, height - 2).map(account => ` ${account.name} · ${account.auth} · ${account.status}`), width, height);
+  if (height < 8) return panel('Accounts', view.accounts.slice(0, height - 2).map(account => plainText(` ${account.name} · ${account.auth} · ${account.status}`)), width, height);
   const wide = width >= 110;
   const accountWidth = wide ? Math.floor(width * 0.69) : width;
   const telemetryHeight = !wide && height >= 14 ? 5 : 0;
@@ -40,27 +40,27 @@ export function dashboard(tui: Dashboard, width: number, height: number): string
       ` Tokens in  ${view.totals.input}`,
       ` Tokens out ${view.totals.output}`,
       '', ' Routing feedback',
-      ...view.accounts.filter(account => account.adaptive?.samples).slice(0, 3).map(account => ` ${account.name}: ${Math.round(account.adaptive.latencyMs)}ms / ${(account.adaptive.failureRate * 100).toFixed(0)}% fail`),
+      ...view.accounts.filter(account => account.adaptive?.samples).slice(0, 3).map(account => ` ${plainText(account.name)}: ${Math.round(account.adaptive.latencyMs)}ms / ${(account.adaptive.failureRate * 100).toFixed(0)}% fail`),
       '', ' Pools',
-      ...view.pools.flatMap(pool => [` ${pool.name} · ${pool.strategy}`, ` ${pool.members.length} accounts / ${pool.totals.requests} requests`]),
+      ...view.pools.flatMap(pool => [` ${plainText(pool.name)} · ${plainText(pool.strategy)}`, ` ${pool.members.length} accounts / ${pool.totals.requests} requests`]),
     ];
     const side = panel('Telemetry', metrics, width - accountWidth, panelHeight);
     upper = upper.map((line, i) => `${line}${side[i] ?? ''}`);
   }
-  const active = [...tui.active.values()].map(request => ` ${request.method} ${request.path} → ${request.account ?? 'routing'} (${((Date.now() - request.started) / 1000).toFixed(1)}s)`);
+  const active = [...tui.active.values()].map(request => plainText(` ${request.method} ${request.path} → ${request.account ?? 'routing'} (${((Date.now() - request.started) / 1000).toFixed(1)}s)`));
   if (telemetryHeight) upper.push(...panel('Telemetry', [
     ` ${view.totals.requests} requests · ${view.totals.inFlight} active attempts`,
     ` Tokens in ${view.totals.input} / out ${view.totals.output}`,
-    ` Pools: ${view.pools.map(pool => pool.name).join(', ')}`,
+    ` Pools: ${view.pools.map(pool => plainText(pool.name)).join(', ')}`,
   ], width, telemetryHeight));
-  const activity = [...active, ...tui.log.map(entry => ` ${entry.t} ${entry.msg}`)];
+  const activity = [...active, ...tui.log.map(entry => plainText(` ${entry.t} ${entry.msg}`))];
   return [...upper, ...panel(`Activity · ${tui.active.size} active`, activity, width, height - panelHeight - telemetryHeight)];
 }
 
 export function usagePanel(content: string[], width: number, height: number, offset: number): { lines: string[]; offset: number } {
   const inner = Math.max(1, width - 4);
   const wrapped = content.flatMap(line => {
-    const characters = Array.from(line);
+    const characters = Array.from(plainText(line));
     if (!characters.length) return [''];
     const rows = [];
     for (let i = 0; i < characters.length; i += inner) rows.push(` ${characters.slice(i, i + inner).join('')}`);

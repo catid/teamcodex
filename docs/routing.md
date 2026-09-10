@@ -45,6 +45,14 @@ uncertain pending redemption reuses its original ID, even if current usage drops
 Configuration reload updates pool policy and account overrides. Removing an account
 through the CLI also removes its pool memberships. Empty pools fail closed. Resetting
 installation settings preserves accounts but resets routing to the default behavior.
+Eligibility is checked again after token refresh, before forwarding. Accounts disabled,
+removed, or moved out of the selected pool during that wait cannot receive the request.
+Removing the selected pool or repeatedly changing eligibility during preparation returns
+503 `ROUTING_CHANGED` with `Retry-After: 1`; retries remain bounded across reloads.
+
+Manual TUI switching is available only without explicit pools. With pools configured,
+account selection follows each pool's strategy; edit its membership or strategy and
+reload the configuration to change routing.
 
 The global concurrency limit defaults to 100; a pool can impose a lower limit.
 Limits accept integers 1–10000. Admission occurs before request-body buffering.

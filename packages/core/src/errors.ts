@@ -1,4 +1,6 @@
 export const ERROR_CODES = Object.freeze({
+  API_DESTINATION_INVALID: { opcode: 6004, message: 'API destination must use the configured upstream origin without URL credentials' },
+  OAUTH_CALLBACK_INVALID: { opcode: 2021, message: 'Invalid callback request URL' },
   HISTORY_INVALID: { opcode: 1013, message: 'invalid_history' },
   STATUS_ARGUMENTS_INVALID: { opcode: 3012, message: 'Usage: teamcodex status [--compact | --json] [--no-color]' },
   STATUS_READ_FAILED: { opcode: 3013, message: 'Cannot read TeamCodex status ({message}). Check teamcodex ps or start with teamcodex serve.' },
@@ -7,6 +9,7 @@ export const ERROR_CODES = Object.freeze({
   PROXY_OVERLOADED: { opcode: 3011, message: 'Proxy concurrency limit reached; retry later', type: 'overloaded_error' },
   ROUTING_CONFIG_INVALID: { opcode: 1012, message: 'Invalid routing configuration: check pools, unique account names, weights (1–1000), enabled flags and thresholds (0–1)' },
   ROUTING_POOL_UNKNOWN: { opcode: 3010, message: 'Unknown routing pool: {name}', type: 'invalid_request_error' },
+  ROUTING_CHANGED: { opcode: 3014, message: 'Routing changed while preparing the request; retry later', type: 'proxy_error' },
   CONFIG_INVALID: { opcode: 1001, message: 'Config must be a JSON object' },
   CONFIG_PORT_INVALID: { opcode: 1002, message: 'proxy.port must be an integer from 1 to 65535' },
   CONFIG_KEY_INVALID: { opcode: 1003, message: 'proxy.apiKey must be a nonempty string' },
@@ -84,6 +87,7 @@ export const ERROR_CODES = Object.freeze({
   TUI_ADD_FAILED: { opcode: 8002, message: 'Add failed: {message}' },
   TUI_SYNC_FAILED: { opcode: 8003, message: 'Sync failed: {message}' },
   TUI_IMPORT_FAILED: { opcode: 8004, message: 'Import failed: {message}' },
+  TUI_SWITCH_POOLED: { opcode: 8005, message: 'Account selection is controlled by routing pools. Edit pool membership or strategy to change routing.' },
   USAGE_PROVIDER_UNAVAILABLE: { opcode: 4006, message: 'provider_unavailable' },
   USAGE_REFRESH_FAILED: { opcode: 4007, message: 'refresh_failed' },
   USAGE_UNKNOWN_OUTCOME: { opcode: 4008, message: 'unknown_outcome' },

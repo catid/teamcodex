@@ -26,7 +26,7 @@ export class AccountManager {
   autoReset?: Partial<ResetPolicy>;
   usagePolling?: { running: boolean; lastStartedAt?: string; lastCompletedAt?: string };
   stats?: UsageStats;
-  private _onTokenRefresh?: (index: number, tokens: Credentials, previousToken: string) => void | Promise<void>;
+  private _onTokenRefresh?: (index: number, tokens: Credentials, previousToken: string, previousCredential: string | undefined) => void | Promise<void>;
   constructor(accounts: AccountConfig[], switchThreshold = 0.98, routing: RoutingConfig | undefined = undefined, { randomIndex = randomInt }: { randomIndex?: (max: number) => number } = {}) {
     this.accounts = accounts.map((acct, index) => this._buildAccount(acct, index));
     this.randomIndex = randomIndex;
@@ -111,6 +111,13 @@ export class AccountManager {
     const live = this._resolveAccount(account);
     if (live) this.currentIndex = live.index;
     return this._selectNext();
+  }
+
+  isAccountEligible(account: Account, poolName?: string): boolean {
+    if (!this.accounts.includes(account) || !this._isUsable(account)) return false;
+    if (!this.routing && poolName === undefined) return true;
+    const name = poolName ?? this.routing?.defaultPool;
+    return name ? this.routing?.pools[name]?.accounts.includes(account.name) ?? false : false;
   }
 
   _isAvailable(account: Account | undefined): account is Account {
@@ -319,12 +326,13 @@ export class AccountManager {
     if (account._refreshPromise) return account._refreshPromise;
 
     const refreshToken = account.refreshToken;
+    const previousCredential = account.credential;
     account._refreshPromise = (async () => {
       console.log(`[TeamCodex] Refreshing token for account "${account.name}"...`);
       try {
         const newTokens = await refreshAccessToken(refreshToken);
         // A removal or re-import may have happened while the request was pending.
-        if (!this.accounts.includes(account) || account.refreshToken !== refreshToken) return;
+        if (!this.accounts.includes(account) || account.refreshToken !== refreshToken || account.credential !== previousCredential) return;
         if (account._refreshAfter) {
           account.status = 'active';
           account.rateLimitedUntil = null;
@@ -336,12 +344,12 @@ export class AccountManager {
         account.expiresAt = newTokens.expiresAt;
         console.log(`[TeamCodex] Token refreshed for account "${account.name}"`);
         try {
-          await this._onTokenRefresh?.(account.index, newTokens, refreshToken);
+          await this._onTokenRefresh?.(account.index, newTokens, refreshToken, previousCredential);
         } catch (err) {
           console.error(errorMessage('TOKEN_PERSIST_FAILED', { message: (err instanceof Error ? err.message : String(err)) }));
         }
       } catch (err) {
-        if (!this.accounts.includes(account) || account.refreshToken !== refreshToken) return;
+        if (!this.accounts.includes(account) || account.refreshToken !== refreshToken || account.credential !== previousCredential) return;
         console.error(errorMessage('ACCOUNT_REFRESH_FAILED', { name: account.name, message: (err instanceof Error ? err.message : String(err)) }));
         // A revoked/invalid grant is permanent — stop re-attempting the
         // refresh on every request. The access token may still work until it
@@ -375,7 +383,7 @@ export class AccountManager {
   /**
    * Set a callback to persist refreshed tokens to config.
    */
-  onTokenRefresh(callback: (index: number, tokens: Credentials, previousToken: string) => void | Promise<void>) {
+  onTokenRefresh(callback: (index: number, tokens: Credentials, previousToken: string, previousCredential: string | undefined) => void | Promise<void>) {
     this._onTokenRefresh = callback;
   }
 

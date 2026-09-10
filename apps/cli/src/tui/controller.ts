@@ -124,17 +124,18 @@ export class TUI {
   // ── input handling ─────────────────────────────────
 
   _onData(d: string) {
-    if (d === '\x1b[A') return this._key('up');
-    if (d === '\x1b[B') return this._key('down');
-    if (d === '\x1b') return this._key('esc');
-    if (d === '\r' || d === '\n') return this._key('enter');
-    if (d === '\x03') return this._key('ctrl-c');
-    if (d === '\x7f' || d === '\x08') return this._key('bs');
-    if (this.mode === 'input' && !d.includes('\x1b')) {
+    if (this.mode === 'input' && d.length > 1 && !d.includes('\x1b')) {
       for (const ch of d) if (ch >= ' ') this._key(ch);
       return;
     }
-    if (d.length === 1 && d >= ' ') return this._key(d);
+    const keys: Record<string, string> = { '\x1b[A': 'up', '\x1b[B': 'down', '\x1b': 'esc', '\r': 'enter', '\n': 'enter', '\x03': 'ctrl-c', '\x7f': 'bs', '\x08': 'bs' };
+    // PTYs may deliver several keypresses in one chunk. Keep CSI sequences intact.
+    // eslint-disable-next-line no-control-regex -- Decode terminal keyboard sequences.
+    for (const ch of d.match(/\x1b\[[0-?]*[ -/]*[@-~]|[\s\S]/gu) || []) {
+      const key = keys[ch];
+      if (key) this._key(key);
+      else if (ch.length === 1 && ch >= ' ') this._key(ch);
+    }
   }
 
   _key(k: string) {
@@ -157,6 +158,7 @@ export class TUI {
   _keyNormal(k: string) {
     if (k === 'q') { this.stop(); this.onQuit?.(); }
     else if (k === 's' && this.am.accounts.length > 0) {
+      if (this.am.routing) { this._addLog(errorMessage('TUI_SWITCH_POOLED')); return; }
       this.mode = 'select'; this.selAction = 'switch'; this.selIdx = this.am.currentIndex;
     }
     else if (k === 'r' && this.am.accounts.length > 0) {
@@ -168,6 +170,11 @@ export class TUI {
   }
 
   _keySelect(k: string) {
+    if (this.selAction === 'switch' && this.am.routing) {
+      this.mode = 'normal';
+      this._addLog(errorMessage('TUI_SWITCH_POOLED'));
+      return;
+    }
     const len = this.am.accounts.length;
     if (!len) { this.mode = 'normal'; return; }
     this.selIdx = Math.min(this.selIdx, len - 1);
@@ -217,7 +224,7 @@ export class TUI {
       if (added > 0) {
         this._addLog(`Synced ${added} new account(s) from config`);
       } else if (updated > 0) {
-        this._addLog(`Refreshed credentials for ${updated} account(s)`);
+        this._addLog(`Updated ${updated} account(s)`);
       } else {
         this._addLog('Config reloaded, no account changes');
       }

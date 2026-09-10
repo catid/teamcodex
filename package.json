@@ -24,7 +24,7 @@
     "test:tui": "bun test e2e/tui.test.ts",
     "test:oauth": "bun test e2e/oauth.test.ts",
     "test:coverage": "bun test --coverage packages/core/test packages/proxy/test apps/cli/test",
-    "typecheck": "tsc --build",
+    "typecheck": "bun node_modules/@typescript/native/bin/tsc --build",
     "test:core": "bun test packages/core/test",
     "test:proxy": "bun test packages/proxy/test",
     "test:cli": "bun test apps/cli/test"
@@ -49,7 +49,7 @@
     "globals": "17.12.0",
     "knip": "6.35.1",
     "playwright": "1.63.0",
-    "typescript": "npm:@typescript/typescript6@6.0.2",
+    "typescript": "6.0.3",
     "@types/bun": "1.4.2",
     "typescript-eslint": "8.70.0",
     "@typescript/native": "npm:typescript@7.0.2",

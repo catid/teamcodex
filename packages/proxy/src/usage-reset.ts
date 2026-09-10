@@ -139,7 +139,7 @@ export class UsageResetMonitor {
   async checkAccount(account: Account): Promise<void> {
     if (account.type !== 'chatgpt' || !enabled(account) || failed(account)) return;
     await this.manager.ensureTokenFresh(account);
-    if (!this.manager.accounts.includes(account) || failed(account)) return;
+    if (!this.manager.accounts.includes(account) || !enabled(account) || failed(account)) return;
     let snapshot = null;
     try {
       snapshot = await this.readUsage(account);
@@ -151,7 +151,7 @@ export class UsageResetMonitor {
     const credential = account.credential;
     const accountId = account.accountId;
     const reservation = await this.reserve(account, snapshot);
-    if (!reservation || this.controller.signal.aborted ||
+    if (!reservation || !enabled(account) || this.controller.signal.aborted ||
         !this.manager.accounts.includes(account) || account.accountId !== accountId || account.credential !== credential) return;
     await this.redeem(account, reservation);
   }

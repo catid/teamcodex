@@ -43,14 +43,14 @@ export async function runCommand(args: string[]): Promise<void> {
 
   // --safe: don't add the bypass flag
   let bypass = true;
-  const safeIdx = codexArgs.indexOf('--safe');
-  if (safeIdx >= 0) { bypass = false; codexArgs.splice(safeIdx, 1); }
-
   const settings = [];
   for (let i = 0; i < codexArgs.length && codexArgs[i] !== '--';) {
     if (['-c', '--config'].includes(codexArgs[i] ?? '')) {
       if (i + 1 >= codexArgs.length) throw createError('ARGUMENT_VALUE_MISSING', { argument: codexArgs[i] ?? '' });
       settings.push(...codexArgs.splice(i, 2));
+    } else if (codexArgs[i] === '--safe') {
+      bypass = false;
+      codexArgs.splice(i, 1);
     } else if (/^(--config|-c)=/.test(codexArgs[i] ?? '')) settings.push(...codexArgs.splice(i, 1));
     else i++;
   }

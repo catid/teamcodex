@@ -1,4 +1,5 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 import { isRecord } from '@teamcodex/core/config';
@@ -6,11 +7,15 @@ import { isRecord } from '@teamcodex/core/config';
 import type { Credentials } from './tokens.ts';
 import { accountInfoFromTokens, defaultCodexAuthPath } from './tokens.ts';
 
-async function writeCodexAuth(authPath: string, auth: Record<string, unknown>): Promise<void> {
+async function writeCodexAuth(authPath: string, auth: Record<string, unknown>, expectedContent: string, isCurrent: () => boolean): Promise<boolean> {
   await mkdir(dirname(authPath), { recursive: true });
-  const tmpPath = `${authPath}.${process.pid}.tmp`;
-  await writeFile(tmpPath, `${JSON.stringify(auth, null, 2)  }\n`, { mode: 0o600 });
-  await rename(tmpPath, authPath);
+  const tmpPath = `${authPath}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(tmpPath, `${JSON.stringify(auth, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+    if (await readFile(authPath, 'utf8') !== expectedContent || !isCurrent()) return false;
+    await rename(tmpPath, authPath);
+    return true;
+  } finally { await rm(tmpPath, { force: true }); }
 }
 
 /**
@@ -20,11 +25,13 @@ async function writeCodexAuth(authPath: string, auth: Record<string, unknown>): 
  * newer tokens — without this, codex eventually tries to refresh a rotated
  * refresh token and dies with "refresh token was revoked".
  */
-export async function updateCodexAuthIfMatching(account: { name: string; accountId?: string | null }, newTokens: Credentials): Promise<void> {
+export async function updateCodexAuthIfMatching(account: { name: string; accountId?: string | null }, newTokens: Credentials, previousRefreshToken: string, previousCredential: string | undefined, isCurrent: () => boolean): Promise<void> {
   const authPath = defaultCodexAuthPath();
   let auth: Record<string, unknown>;
+  let content: string;
   try {
-    const raw: unknown = JSON.parse(await readFile(authPath, 'utf-8'));
+    content = await readFile(authPath, 'utf8');
+    const raw: unknown = JSON.parse(content);
     if (!isRecord(raw)) return;
     auth = raw;
   } catch {
@@ -39,9 +46,10 @@ export async function updateCodexAuthIfMatching(account: { name: string; account
   });
   const acctId = account.accountId
     || accountInfoFromTokens({ accessToken: newTokens.accessToken, idToken: newTokens.idToken }).accountId;
-  if (!acctId || authInfo.accountId !== acctId) return;
+  if (!acctId || authInfo.accountId !== acctId || !isCurrent() ||
+      tokens.refresh_token !== previousRefreshToken || tokens.access_token !== previousCredential) return;
 
-  await writeCodexAuth(authPath, {
+  const saved = await writeCodexAuth(authPath, {
     ...auth,
     tokens: {
       ...tokens,
@@ -51,7 +59,7 @@ export async function updateCodexAuthIfMatching(account: { name: string; account
       account_id: acctId,
     },
     last_refresh: new Date().toISOString(),
-  });
-  console.log(`[TeamCodex] Synced refreshed tokens to codex auth.json ("${account.name}")`);
+  }, content, isCurrent);
+  if (saved) console.log(`[TeamCodex] Synced refreshed tokens to codex auth.json ("${account.name}")`);
 }
 

@@ -36,13 +36,19 @@ Track actual completion in [IMPLEMENTATION_CHECKLIST.md](../IMPLEMENTATION_CHECK
 
 ## Compiler compatibility
 
-TypeScript 7.0.2 supplies `tsc`; ESLint uses the TypeScript 6 API through the
-`typescript` alias to `@typescript/typescript6@6.0.2`, following Microsoft's
+TypeScript 7.0.2 supplies the compiler through the `@typescript/native` package
+alias. The typecheck script invokes that compiler explicitly; ESLint consumes
+the `typescript@6.0.3` JavaScript API, following Microsoft's
 [side-by-side guidance](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/#running-side-by-side-with-typescript-60).
 Bun 1.4.2 declarations require current Node declarations. Pin `@types/node` 26.5.1:
 the registry's `latest` tag currently resolves to 22.20.2, which lacks declarations
 used by Bun. This is type compatibility, not a Node runtime requirement.
 `skipLibCheck` remains false. Recheck these pins when upgrading the toolchain.
+The tooling project's `paths` maps `typescript` to the root TypeScript 6 API.
+`@typescript-eslint/types` imports compiler declarations without declaring a
+TypeScript peer; Bun's isolated fallback can otherwise select the TypeScript 7
+compiler alias. This mapping keeps declaration checking enabled and does not
+change application resolution or runtime imports.
 
 ## Current layout
 

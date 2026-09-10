@@ -8,13 +8,11 @@ type StatusAccount = ReturnType<AccountManager['getStatus']>['accounts'][number]
 interface StatusOptions { columns?: number | string | undefined; color?: boolean; compact?: boolean; now?: number }
 type Tone = 'title' | 'cyan' | 'green' | 'yellow' | 'red' | 'dim' | 'bold';
 
-import { stripVTControlCharacters } from 'node:util';
-
 import { createError } from '@teamcodex/core/errors';
 
+import { plainText as clean } from '../tui/style.ts';
+
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
-  // eslint-disable-next-line no-control-regex -- Strip or test terminal control sequences.
-const clean = (value: unknown): string => stripVTControlCharacters(String(value ?? '')).replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, ' ');
 const time = (value: unknown): number => typeof value === 'number' ? value : Date.parse(typeof value === 'string' ? value : '');
 const compact = (value: unknown): string => finite(value) ? Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(value) : '—';
 const number = (value: unknown): string => finite(value) ? Math.round(value).toLocaleString('en-US') : '—';
@@ -76,6 +74,8 @@ function windows(account: StatusAccount): { name: string; value: number | null; 
 }
 
 function health(account: StatusAccount, now: number, threshold: number): { label: string; color: Tone } {
+  if (account.enabled === false || account.status === 'disabled') return { label: 'Disabled', color: 'dim' };
+  if (account.status === 'refreshing') return { label: 'Refreshing', color: 'cyan' };
   if (account.status === 'error') return { label: 'Login needed', color: 'red' };
   if (account.status === 'exhausted') return { label: 'Exhausted', color: 'red' };
   if (account.status === 'throttled' && (!time(account.rateLimitedUntil) || time(account.rateLimitedUntil) > now)) {

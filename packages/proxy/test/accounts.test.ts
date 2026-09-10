@@ -202,3 +202,40 @@ function getAccount(manager: AccountManager, index: number) {
   assert.ok(account);
   return account;
 }
+
+test('reload publishes routing with account metadata and counts metadata changes', async () => {
+  const config: Config = { ...createDefaultConfig(), accounts: [key('first')] };
+  const manager = new AccountManager(config.accounts);
+  const routing: NonNullable<Config['routing']> = { defaultPool: 'main', pools: { main: { accounts: ['renamed'], strategy: 'failover' } } };
+  // Match this rename by identity instead of display name.
+  const first = config.accounts[0]; assert.ok(first); first.accountId = 'id';
+  getAccount(manager, 0).accountId = 'id';
+  const disk: Config = { ...createDefaultConfig(), accounts: [{ ...first, name: 'renamed', enabled: false, weight: 2 }], routing, switchThreshold: 0.9 };
+  const pending = syncAccountsFromDisk(disk, config, manager);
+  assert.equal(manager.routing, undefined);
+  assert.equal(manager.switchThreshold, 0.98);
+  assert.deepEqual(await pending, { added: 0, updated: 1, removed: 0 });
+  assert.deepEqual(manager.routing, routing);
+  assert.deepEqual(config.routing, routing);
+  assert.equal(config.switchThreshold, 0.9);
+  assert.equal(getAccount(manager, 0).enabled, false);
+});
+
+for (const rejected of [false, true]) {
+  test(`late refresh ${rejected ? 'failure' : 'success'} preserves replacement access tokens with an unchanged refresh token`, async () => {
+    const { promise, resolve } = Promise.withResolvers<Response>();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = Object.assign(() => promise, { preconnect: originalFetch.preconnect });
+    afterEach(() => { globalThis.fetch = originalFetch; });
+    const account: AccountConfig = { name: 'first', type: 'chatgpt', accessToken: 'old', refreshToken: 'same-refresh', expiresAt: 1 };
+    const config: Config = { ...createDefaultConfig(), accounts: [account] };
+    const manager = new AccountManager(config.accounts);
+    const pending = manager.ensureTokenFresh(0);
+    await syncAccountsFromDisk({ ...createDefaultConfig(), accounts: [{ ...account, accessToken: 'new-login', expiresAt: Date.now() + 3600000 }] }, config, manager);
+    resolve(rejected ? Response.json({ error: 'invalid_grant' }, { status: 400 }) : Response.json({ access_token: 'late', refresh_token: 'late-refresh' }));
+    await pending;
+    assert.equal(getAccount(manager, 0).credential, 'new-login');
+    assert.equal(getAccount(manager, 0).refreshToken, 'same-refresh');
+    assert.equal(getAccount(manager, 0).status, 'active');
+  });
+}

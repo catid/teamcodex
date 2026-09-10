@@ -456,3 +456,24 @@ function secondAccount(manager: AccountManager) {
   assert.ok(account);
   return account;
 }
+
+test('disabling an account during reservation persistence prevents the reset POST', async () => {
+  const f = await fixture();
+  const monitor = new UsageResetMonitor(f.manager, f.config, { fetchFn: f.fetchFn, now: f.now, updateConfig: async updater => {
+    const result = await atomicConfigUpdate(updater);
+    f.first.enabled = false;
+    return result;
+  } });
+  await monitor.check();
+  assert.equal(f.posts().length, 0);
+  assert.ok((await f.state())?.pendingRequestId, 'retain the reserved ID for recovery');
+});
+
+test('disabling an account during reset backoff prevents another wire attempt', async () => {
+  const f = await fixture();
+  f.post(() => new Response('', { status: 503 }));
+  const monitor = new UsageResetMonitor(f.manager, f.config, { fetchFn: f.fetchFn, now: f.now, wait: async () => { f.first.enabled = false; } });
+  await monitor.check();
+  assert.equal(f.posts().length, 1);
+  assert.ok((await f.state())?.pendingRequestId);
+});

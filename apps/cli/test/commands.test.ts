@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdir, mkdtemp, readFile, realpath, rm,writeFile } from 'node:fs/promises';
+import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -198,3 +200,50 @@ for (const membership of ['absent', 'current']) {
     await assert.rejects(readFile(join(f.dir, 'sg.log')), { code: 'ENOENT' });
   });
 }
+
+test('api credentials stay on the configured upstream and redirects are returned without following', async () => {
+  const f = await fixture();
+  const received: http.IncomingHttpHeaders[] = [];
+  const outside = http.createServer((req, res) => { received.push(req.headers); res.end('{}'); });
+  outside.listen(0, '127.0.0.1');
+  await once(outside, 'listening');
+  const outsideAddress = outside.address(); assert.ok(outsideAddress && typeof outsideAddress !== 'string');
+  const outsideUrl = `http://127.0.0.1:${outsideAddress.port}`;
+  const upstreamPaths: (string | undefined)[] = [];
+  const upstream = http.createServer((req, res) => {
+    upstreamPaths.push(req.url);
+    assert.equal(req.headers.authorization, 'Bearer fake-account-key');
+    if (req.url === '/redirect') res.writeHead(302, { location: outsideUrl });
+    res.end('{}');
+  });
+  upstream.listen(0, '127.0.0.1');
+  await once(upstream, 'listening');
+  afterEach(async () => { for (const server of [upstream, outside]) await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); });
+  const address = upstream.address(); assert.ok(address && typeof address !== 'string');
+  const base = `http://127.0.0.1:${address.port}`;
+  f.config.apiUpstream = base;
+  f.config.accounts = [{ name: 'test', type: 'apikey', apiKey: 'fake-account-key' }];
+  await writeFile(f.env.TEAMCODEX_CONFIG ?? '', JSON.stringify(f.config));
+  const call = (path: string) => exec(process.execPath, [join(root, 'apps/cli/src/index.ts'), 'api', path], { env: f.env, timeout: 5000 });
+  for (const path of ['/ok', `${base}/ok`]) assert.match((await call(path)).stderr, /200 OK/);
+  for (const path of [outsideUrl, outsideUrl.replace('http:', '')]) {
+    await assert.rejects(call(path), error => isRecord(error) && typeof error.stderr === 'string' && error.stderr.includes('configured upstream origin'));
+  }
+  assert.match((await call('/redirect')).stderr, /302/);
+  assert.deepEqual(received, []);
+  f.config.apiUpstream = `${base}/gateway`;
+  await writeFile(f.env.TEAMCODEX_CONFIG ?? '', JSON.stringify(f.config));
+  await call('/ok');
+  assert.equal(upstreamPaths.at(-1), '/gateway/ok');
+});
+
+test('native run preserves literal --safe after a delimiter and inside a config value', async () => {
+  const f = await fixture();
+  for (const args of [['exec', '--', '--safe'], ['exec', '-c', '--safe']]) {
+    const { stdout } = await exec(process.execPath, [join(root, 'apps/cli/src/index.ts'), 'run', ...args], { env: f.env });
+    const launch = JSON.parse(stdout);
+    assert.ok(launch.args.includes('--dangerously-bypass-approvals-and-sandbox'));
+    if (args.includes('--')) assert.deepEqual(launch.args.slice(-2), ['--', '--safe']);
+    else assert.ok(launch.args.some((arg: unknown, index: number) => arg === '-c' && launch.args[index + 1] === '--safe'));
+  }
+});

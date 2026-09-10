@@ -1,6 +1,7 @@
 # Validation record
 
-Validated locally on 2026-09-10. Tests use temporary configuration and fake
+Validated on 2026-09-10 after the TypeScript/Bun migration and integration of
+upstream hardening commit `21e16a7`. Tests use temporary configuration and fake
 credentials. Provider behavior is backed by revision-specific source references in
 [authentication.md](authentication.md); no real credentials or reset credits were used.
 
@@ -21,9 +22,9 @@ credentials. Provider behavior is backed by revision-specific source references 
 | Upstream references | Reviewed `openai/codex` and user-selected `earendil-works/pi` revisions are recorded in `authentication.md`; upstream checkouts are not included |
 | Roadmap | `ROADMAP.md` distinguishes implemented scope from future product/load/deployment work |
 
-Current local unit/integration gate: **212 tests passed** under Bun 1.4.2.
+Current local unit/integration gate: **239 tests passed** under Bun 1.4.2.
 Strict TypeScript, ESLint, Knip and generated-adapter checks pass. A fresh frozen
-install and full checks pass; the Ubuntu Bun image passes 211 tests with the
+install and full checks pass; the Ubuntu Bun image passes 238 tests with the
 checkout-specific Git test skipped. Python helpers pass 13 tests and Bash syntax checks pass. The separate
 OAuth suite passes all six flows; Docker passes its 12 lifecycle scenarios; the
 native PTY suite produces all 20 screenshot states. Small/narrow, usage and browser/
@@ -45,3 +46,9 @@ additional capabilities.
 Adaptive routing adds deterministic weight, latency/failure, stale-recovery and
 probing tests plus HTTP concurrency, retry and cancellation regressions. The panel rewrite adds shared telemetry and four exact-size layout checks; all
 20 real-PTY screenshot states pass with the new composition. See [tui.md](tui.md).
+
+All upstream hardening regressions have typed counterparts, including credential
+replacement, persistence races, reload eligibility, cancelled uploads, terminal
+controls and disabled-account reset retries. A clean isolated frozen install and
+forced compiler rebuild verify tooling declarations against the TypeScript 6 API;
+application compilation remains TypeScript 7 with `skipLibCheck: false`.

@@ -29,7 +29,9 @@ export function startCallbackServer(expectedState: string): Promise<{ codePromis
     const { promise: codePromise, resolve: resolveCode, reject: rejectCode } = Promise.withResolvers<AuthCode>();
 
     const server = http.createServer((req, res) => {
-      const url = new URL(req.url ?? '/', 'http://localhost');
+      let url: URL;
+      try { url = new URL(req.url ?? '/', 'http://localhost'); }
+      catch { res.writeHead(400, { 'Content-Type': 'text/plain' }); res.end(errorMessage('OAUTH_CALLBACK_INVALID')); return; }
 
       if (url.pathname === '/auth/callback') {
         const code = url.searchParams.get('code');

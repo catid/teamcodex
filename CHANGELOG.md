@@ -14,3 +14,5 @@
 - Transient retries prefer untried pool members.
 - Usage reset responses and retries validate current account identity.
 - Accounts recover when additional quota windows regain capacity; reset outcomes preserve usage totals.
+- Preserved upstream credential, routing, reset-disable and terminal hardening through the migration.
+- Fixed clean-install compiler API resolution for ESLint declarations.
