@@ -22,9 +22,9 @@ credentials. Provider behavior is backed by revision-specific source references 
 | Upstream references | Reviewed `openai/codex` and user-selected `earendil-works/pi` revisions are recorded in `authentication.md`; upstream checkouts are not included |
 | Roadmap | `ROADMAP.md` distinguishes implemented scope from future product/load/deployment work |
 
-Current local unit/integration gate: **239 tests passed** under Bun 1.4.2.
+Current local unit/integration gate: **247 tests passed** under Bun 1.4.2.
 Strict TypeScript, ESLint, Knip and generated-adapter checks pass. A fresh frozen
-install and full checks pass; the Ubuntu Bun image passes 238 tests with the
+install and full checks pass; the Ubuntu Bun image passes 246 tests with the
 checkout-specific Git test skipped. Python helpers pass 13 tests and Bash syntax checks pass. The separate
 OAuth suite passes all six flows; Docker passes its 12 lifecycle scenarios; the
 native PTY suite produces all 20 screenshot states. Small/narrow, usage and browser/
@@ -52,3 +52,9 @@ replacement, persistence races, reload eligibility, cancelled uploads, terminal
 controls and disabled-account reset retries. A clean isolated frozen install and
 forced compiler rebuild verify tooling declarations against the TypeScript 6 API;
 application compilation remains TypeScript 7 with `skipLibCheck: false`.
+
+The shared I/O follow-up adds eight tests for generic HTTP adapters and filesystem
+mechanisms. All provider/service calls use the shared API client; application and
+tooling filesystem imports use shared exports. Configuration, token persistence
+and history use shared atomic writes/locking. Fresh install, full checks, Ubuntu,
+Docker, OAuth and TUI gates pass with the new workspace included.

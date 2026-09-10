@@ -20,7 +20,11 @@ Upstream implementation references are recorded in [docs/authentication.md](docs
 - Use strict TypeScript with complete boundary contracts and inferred local types.
   Validate external data as `unknown`; avoid `any`, unsafe casts and suppressions.
 - Keep dependency direction CLI → proxy → core, with explicit package exports and
-  declared workspace dependencies. Use Bun's isolated linker and pinned runtime.
+  declared workspace dependencies. CLI/proxy also consume independent `shared` utilities.
+  Keep filesystem operations in `@teamcodex/shared/filesystem`; use the generic
+  `ApiClient<Request, Response, Context, Error>` for provider calls. Provider policy
+  and response validation stay in adapters; core remains pure. See [shared I/O](docs/shared-io.md).
+  Use Bun's isolated linker and pinned runtime.
 - Apply SOLID and KISS through cohesive responsibilities, simple functions and
   explicit I/O seams. Avoid speculative abstractions and cross-layer imports.
 - Normalize configuration, account identity, quota and telemetry at boundaries;

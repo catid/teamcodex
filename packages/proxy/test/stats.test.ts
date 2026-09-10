@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir,readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { AccountIdentity } from '@teamcodex/core/usage';
+import { mkdtemp, readdir,readFile, rm, stat, writeFile } from '@teamcodex/shared/filesystem';
 import { afterEach, test } from 'bun:test';
 
 import { UsageStats } from '../src/stats.ts';

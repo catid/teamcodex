@@ -1,8 +1,8 @@
-import { mkdir } from 'node:fs/promises';
 import http from 'node:http';
 
 import type { Config } from '@teamcodex/core/config';
 import { errorMessage, errorResponse } from '@teamcodex/core/errors';
+import { mkdir } from '@teamcodex/shared/filesystem';
 
 import type { AccountManager } from '../account-manager.ts';
 import { retryPolicy } from '../retry.ts';

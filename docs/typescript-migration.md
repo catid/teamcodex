@@ -7,6 +7,8 @@ runtime was 1.3.14. Use pinned Bun with isolated dependency installation.
 ## Dependency direction
 
 `apps/cli` → `packages/proxy` → `packages/core`.
+CLI and proxy also consume the independent `packages/shared` workspace for HTTP
+and filesystem mechanisms; see [shared I/O](shared-io.md).
 The CLI may also consume core types. Core owns errors, domain contracts and pure
 routing algorithms; proxy owns HTTP, persistence, provider authentication and
 account coordination; CLI owns terminal interaction and commands. Keep modules

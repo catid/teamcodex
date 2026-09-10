@@ -7,6 +7,7 @@ import { AccountManager } from '@teamcodex/proxy/account-manager';
 import { resolveAccounts } from '@teamcodex/proxy/accounts';
 import { loadConfig } from '@teamcodex/proxy/config';
 import { createProxyServer } from '@teamcodex/proxy/server';
+import { createHttpClient } from '@teamcodex/shared/api-client';
 
 export async function smokeCommand(args: string[] = []): Promise<void> {
   const config = await loadConfig();
@@ -42,7 +43,7 @@ export async function smokeCommand(args: string[] = []): Promise<void> {
       if (!address || typeof address === 'string') throw createError('SMOKE_CONFIG_MISSING');
       base = `http://127.0.0.1:${address.port}`;
     }
-    const response = await originalFetch(`${base}/backend-api/codex/responses`, {
+    const response = await createHttpClient(originalFetch).request({ url: `${base}/backend-api/codex/responses`, options: {
       method: 'POST',
       signal: AbortSignal.timeout(90_000),
       headers: { authorization: `Bearer ${config.proxy.apiKey}`, 'content-type': 'application/json', accept: 'text/event-stream' },
@@ -51,7 +52,7 @@ export async function smokeCommand(args: string[] = []): Promise<void> {
         input: [{ role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],
         stream: true, store: false, reasoning: { effort: 'low' },
       }),
-    });
+    } });
     if (!response.ok) { await response.body?.cancel(); throw createError('SMOKE_HTTP_ERROR', { status: response.status }); }
     const body = await response.text();
     let output = '', completed = false;

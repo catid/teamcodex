@@ -80,3 +80,18 @@ counterparts; credential/routing/terminal hardening and reset disable checks pas
 A fresh isolated install exposed transitive TypeScript declaration resolution; the
 tooling project explicitly resolves the TypeScript 6 API while TypeScript 7 compiles
 the project. Fresh frozen checks and a forced rebuild pass without relaxed checks.
+
+## Shared I/O follow-up
+
+- [x] Introduce independent shared workspace and declared CLI/proxy/tooling dependencies.
+- [x] Add generic request/response/context/error API adapter and raw streaming transport.
+- [x] Migrate provider and local service HTTP calls through the shared client.
+- [x] Centralize TypeScript filesystem access, locking and atomic persistence.
+- [x] Preserve provider contracts, account identity, retries and reset reservations.
+- [x] Add shared behavior tests and enforce import boundaries with ESLint.
+- [x] Verify fresh install, complete checks, Docker lifecycle/permissions, OAuth and TUI.
+
+Shared I/O validation: 247 local tests pass (eight shared), with strict types, ESLint,
+Knip and generated errors. Fresh frozen install and Ubuntu image each pass 246
+tests with one checkout-only skip. All 12 Docker lifecycle scenarios, six offline
+OAuth flows and 20 native TUI captures pass; screenshot gallery reviewed.

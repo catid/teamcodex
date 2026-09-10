@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import type { AccountConfig, Config } from '@teamcodex/core/config';
 import { isRecord, validateConfig } from '@teamcodex/core/config';
+import { mkdtemp, readFile, rm, writeFile } from '@teamcodex/shared/filesystem';
 import { afterEach, test } from 'bun:test';
 
 for (const changed of ['disk-identity', 'disk-access-token', 'host-login', 'matching-login', 'imported-login']) {

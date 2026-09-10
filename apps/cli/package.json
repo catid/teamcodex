@@ -16,7 +16,8 @@
   },
   "dependencies": {
     "@teamcodex/core": "workspace:*",
-    "@teamcodex/proxy": "workspace:*"
+    "@teamcodex/proxy": "workspace:*",
+    "@teamcodex/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/bun": "1.4.2"

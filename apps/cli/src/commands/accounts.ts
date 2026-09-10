@@ -2,6 +2,7 @@ import { createError, errorMessage } from '@teamcodex/core/errors';
 import { resolveAccounts } from '@teamcodex/proxy/accounts';
 import { accountInfoFromTokens } from '@teamcodex/proxy/auth/tokens';
 import { atomicConfigUpdate, loadOrCreateConfig } from '@teamcodex/proxy/config';
+import { httpClient } from '@teamcodex/shared/api-client';
 
 import { notifyServerReload } from '../accounts.ts';
 import { argValue } from '../arguments.ts';
@@ -91,7 +92,7 @@ export async function apiCommand(args: string[]): Promise<void> {
     fetchOpts.body = data;
   }
 
-  const res = await fetch(url, fetchOpts);
+  const res = await httpClient.request({ url: url, options: fetchOpts });
 
   // Print response headers to stderr
   console.error(`${res.status} ${res.statusText}`);

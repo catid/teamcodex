@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
+import { mkdir, mkdtemp, rm, writeFile } from '@teamcodex/shared/filesystem';
 import type { Terminal } from '@xterm/xterm';
 import { afterEach, test } from 'bun:test';
 import { chromium } from 'playwright';

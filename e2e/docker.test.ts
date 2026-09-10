@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { chmod,mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join,resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 
 import { isRecord } from '@teamcodex/core/config';
+import { chmod,mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from '@teamcodex/shared/filesystem';
 import { afterEach, test } from 'bun:test';
 
 import { array, object, parseObject, readConfig, string } from './fixtures.ts';

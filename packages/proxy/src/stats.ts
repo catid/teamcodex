@@ -1,10 +1,10 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { open, rename, rm,writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 
 import { isRecord } from '@teamcodex/core/config';
 import { createError } from '@teamcodex/core/errors';
 import type { AccountIdentity, Counters, UsageHistory, UsageSnapshot } from '@teamcodex/core/usage';
 import { copyCounters, COUNTER_FIELDS as FIELDS, emptyCounters as counters, tokenCount, validHistory } from '@teamcodex/core/usage';
+import { atomicWrite, readTextFile } from '@teamcodex/shared/filesystem';
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -31,13 +31,7 @@ export class UsageStats {
   async load() {
     if (!this.path) return this;
     try {
-      const file = await open(this.path, 'r');
-      let content;
-      try {
-        const info = await file.stat();
-        if (!info.isFile() || info.size > 8 * 1024 * 1024) throw createError('HISTORY_INVALID');
-        content = await file.readFile('utf8');
-      } finally { await file.close(); }
+      const content = await readTextFile(this.path, 8 * 1024 * 1024, () => createError('HISTORY_INVALID'));
       const data: unknown = JSON.parse(content);
       if (!validHistory(data)) throw createError('HISTORY_INVALID');
       // Retain only the schema fields, even if the file contains extra metadata.
@@ -136,15 +130,12 @@ export class UsageStats {
     if (!path) return;
     while (this.dirty) {
       this.dirty = false;
-      const temporary = `${path}.${randomUUID()}.tmp`;
       try {
-        await writeFile(temporary, JSON.stringify(this.data), { mode: 0o600, flag: 'wx' });
-        await rename(temporary, path);
+        await atomicWrite(path, JSON.stringify(this.data));
         this.persistenceError = null;
       } catch {
         this.dirty = true;
         this.persistenceError = 'Cannot save usage history; current totals are in memory';
-        await rm(temporary, { force: true }).catch(() => {});
         break;
       }
     }

@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { chmod,mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir,tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 import { atomicConfigUpdate, createDefaultConfig, getConfigPath,loadConfig, resetConfig, saveConfig } from '@teamcodex/proxy/config';
+import { chmod,mkdtemp, readFile, rm, stat, writeFile } from '@teamcodex/shared/filesystem';
 import { afterEach, beforeEach, describe, test } from 'bun:test';
 
 const exec = promisify(execFile);

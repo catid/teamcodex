@@ -45,6 +45,15 @@
         "src/**/*.ts",
         "test/**/*.ts"
       ]
+    },
+    "packages/shared": {
+      "entry": [
+        "test/**/*.test.ts"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "test/**/*.ts"
+      ]
     }
   }
 }

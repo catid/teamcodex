@@ -4,7 +4,7 @@
     "composite": true,
     "declaration": true,
     "emitDeclarationOnly": true,
-    "outDir": "../../.cache/types/cli",
+    "outDir": "../../.cache/types/shared",
     "rootDir": ".",
     "types": [
       "bun"
@@ -13,16 +13,5 @@
   "include": [
     "src/**/*.ts",
     "test/**/*.ts"
-  ],
-  "references": [
-    {
-      "path": "../../packages/shared"
-    },
-    {
-      "path": "../../packages/core"
-    },
-    {
-      "path": "../../packages/proxy"
-    }
   ]
 }

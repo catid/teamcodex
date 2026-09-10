@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, readFile, realpath, rm,writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -9,6 +8,7 @@ import { promisify } from 'node:util';
 
 import { isRecord } from '@teamcodex/core/config';
 import { createDefaultConfig } from '@teamcodex/proxy/config';
+import { mkdir, mkdtemp, readFile, realpath, rm,writeFile } from '@teamcodex/shared/filesystem';
 import { afterEach, test } from 'bun:test';
 
 const exec = promisify(execFile);
@@ -82,7 +82,7 @@ if (args.includes('env') && args.includes('--null')) {
 `, { mode: 0o755 });
   // Extensionless scripts use CommonJS unless their containing package opts in.
   await writeFile(join(f.bin, 'package.json'), '{"type":"module"}');
-  const { symlink } = await import('node:fs/promises');
+  const { symlink } = await import('@teamcodex/shared/filesystem');
   const link = join(f.bin, 'team codex');
   await symlink(join(root, 'teamcodex.sh'), link);
   const env = { ...f.env, TEAMCODEX_CONFIG_DIR: join(f.dir, 'config with spaces'), TEAMCODEX_CODEX_HOME: f.dir };

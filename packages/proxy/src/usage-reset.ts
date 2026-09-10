@@ -6,6 +6,7 @@ import { isRecord } from '@teamcodex/core/config';
 import { createError, errorMessage } from '@teamcodex/core/errors';
 import type { UsageSnapshot } from '@teamcodex/core/quota';
 import { normalizeUsage } from '@teamcodex/core/quota';
+import { createHttpClient } from '@teamcodex/shared/api-client';
 
 import type { AccountManager } from './account-manager.ts';
 import { findConfigAccount } from './accounts.ts';
@@ -68,7 +69,7 @@ function errorCode(error: unknown): string {
 export class UsageResetMonitor {
   private readonly manager: AccountManager;
   private readonly config: Config;
-  private readonly fetch: typeof fetch;
+  private readonly client: ReturnType<typeof createHttpClient>;
   private readonly updateConfig: typeof atomicConfigUpdate;
   private readonly now: () => number;
   private readonly wait: typeof retryDelay;
@@ -82,7 +83,7 @@ export class UsageResetMonitor {
   constructor(manager: AccountManager, config: Config, { fetchFn = fetch, updateConfig = atomicConfigUpdate, now = Date.now, wait = retryDelay }: MonitorOptions = {}) {
     this.manager = manager;
     this.config = config;
-    this.fetch = fetchFn;
+    this.client = createHttpClient(fetchFn);
     this.updateConfig = updateConfig;
     this.now = now;
     this.wait = wait;
@@ -165,7 +166,7 @@ export class UsageResetMonitor {
         throw createError('ACCOUNT_CHANGED');
       }
       try {
-        const response = await this.fetch(`${(this.config.upstream || 'https://chatgpt.com').replace(/\/+$/, '')}${path}`, {
+        const response = await this.client.request({ url: `${(this.config.upstream || 'https://chatgpt.com').replace(/\/+$/, '')}${path}`, options: {
           method: body ? 'POST' : 'GET',
           redirect: 'manual',
           signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(15_000)]),
@@ -176,7 +177,7 @@ export class UsageResetMonitor {
             ...(body ? { 'content-type': 'application/json' } : {}),
           },
           ...(body ? { body: JSON.stringify(body) } : {}),
-        });
+        } });
         const payload = await boundedJSON(response);
         // A response can finish after reload or disable; never apply it to changed credentials.
         if (!enabled(account) || !this.manager.accounts.includes(account) ||

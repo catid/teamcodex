@@ -1,5 +1,6 @@
 import { isRecord } from '@teamcodex/core/config';
 import { createError } from '@teamcodex/core/errors';
+import { httpClient } from '@teamcodex/shared/api-client';
 
 import { OAUTH_CLIENT_ID, OAUTH_ISSUER } from './constants.ts';
 import { exchangeCodeForTokens } from './exchange.ts';
@@ -17,12 +18,12 @@ export async function deviceCodeLogin({ onPrompt }: { onPrompt?: (prompt: { veri
   const apiBase = `${OAUTH_ISSUER}/api/accounts`;
 
   // 1. Request a user code
-  const ucRes = await fetch(`${apiBase}/deviceauth/usercode`, {
+  const ucRes = await httpClient.request({ url: `${apiBase}/deviceauth/usercode`, options: {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     signal: AbortSignal.timeout(30_000),
     body: JSON.stringify({ client_id: OAUTH_CLIENT_ID }),
-  });
+  } });
   if (!ucRes.ok) {
     if (ucRes.status === 404) {
       throw createError('DEVICE_AUTH_UNAVAILABLE');
@@ -44,12 +45,12 @@ export async function deviceCodeLogin({ onPrompt }: { onPrompt?: (prompt: { veri
   const deadline = Date.now() + 15 * 60 * 1000;
   let codeResp: Record<string, unknown>;
   while (true) {
-    const r = await fetch(tokenUrl, {
+    const r = await httpClient.request({ url: tokenUrl, options: {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: AbortSignal.timeout(Math.max(1, Math.min(30_000, deadline - Date.now()))),
       body: JSON.stringify({ device_auth_id: deviceAuthId, user_code: userCode }),
-    });
+    } });
     if (r.ok) { const raw: unknown = await r.json(); codeResp = isRecord(raw) ? raw : {}; break; }
     if (r.status === 403 || r.status === 404) {
       await r.body?.cancel();

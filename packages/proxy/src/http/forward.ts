@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import type { Account } from '@teamcodex/core/accounts';
 import { createError, errorMessage, errorResponse } from '@teamcodex/core/errors';
+import { httpClient } from '@teamcodex/shared/api-client';
 
 import type { AccountManager } from '../account-manager.ts';
 import { isTransientError, retryDelay, TRANSIENT_STATUSES } from '../retry.ts';
@@ -147,13 +148,13 @@ export async function forwardRequest(req: IncomingMessage, res: ServerResponse, 
       ctx.attempts++;
       attemptStarted = performance.now();
       armTimeout(upstreams.retry.headerTimeoutSeconds);
-      const upstreamRes = await fetch(upstreamUrl, {
+      const upstreamRes = await httpClient.request({ url: upstreamUrl, options: {
         signal: controller.signal,
         method,
         headers,
         ...(['GET', 'HEAD'].includes(method) ? {} : { body }),
         redirect: 'manual',
-      });
+      } });
 
       headerLatency = performance.now() - attemptStarted;
       failed = upstreamRes.status === 429 || upstreamRes.status >= 500;

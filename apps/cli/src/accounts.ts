@@ -6,6 +6,7 @@ import { findConfigAccount } from '@teamcodex/proxy/accounts';
 import type { Credentials } from '@teamcodex/proxy/auth/tokens';
 import { accountInfoFromTokens } from '@teamcodex/proxy/auth/tokens';
 import { atomicConfigUpdate, getConfigPath } from '@teamcodex/proxy/config';
+import { httpClient } from '@teamcodex/shared/api-client';
 
 export async function upsertChatGPTAccount(name: string | null, creds: Credentials, source = 'unknown'): Promise<void> {
   const info = accountInfoFromTokens(creds);
@@ -59,11 +60,11 @@ export async function notifyServerReload(config: Config, { removeMissing = false
   const qs = removeMissing ? '?removeMissing=1' : '';
   const headers = config.proxy?.apiKey ? { 'x-api-key': config.proxy.apiKey } : {};
   try {
-    const res = await fetch(`${process.env.TEAMCODEX_SERVER_URL || `http://127.0.0.1:${port}`}/teamcodex/reload${qs}`, {
+    const res = await httpClient.request({ url: `${process.env.TEAMCODEX_SERVER_URL || `http://127.0.0.1:${port}`}/teamcodex/reload${qs}`, options: {
       method: 'POST',
       headers,
       signal: AbortSignal.timeout(5000),
-    });
+    } });
     if (!res.ok) throw createError('PROXY_HTTP_ERROR', { status: res.status });
     const raw: unknown = await res.json();
     const data = isRecord(raw) ? raw : {};

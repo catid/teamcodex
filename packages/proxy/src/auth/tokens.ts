@@ -1,9 +1,10 @@
-import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { isRecord } from '@teamcodex/core/config';
 import { createError } from '@teamcodex/core/errors';
+import { httpClient } from '@teamcodex/shared/api-client';
+import { readFile } from '@teamcodex/shared/filesystem';
 
 import { OAUTH_CLIENT_ID, OAUTH_TOKEN } from './constants.ts';
 export interface Credentials {
@@ -108,7 +109,7 @@ export async function refreshAccessToken(refreshToken: string, endpoint = OAUTH_
 
       // Matches the Codex CLI's refresh request exactly: a JSON body with
       // client_id / grant_type / refresh_token and no scope field.
-      const res = await fetch(endpoint, {
+      const res = await httpClient.request({ url: endpoint, options: {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: AbortSignal.timeout(30_000),
@@ -117,7 +118,7 @@ export async function refreshAccessToken(refreshToken: string, endpoint = OAUTH_
           grant_type: 'refresh_token',
           refresh_token: refreshToken,
         }),
-      });
+      } });
 
       if (!res.ok) {
         if (res.status >= 500 && attempt < maxRetries) {

@@ -1,6 +1,5 @@
-import { readFile, writeFile } from 'node:fs/promises';
-
 import { ERROR_CODES } from '@teamcodex/core/errors';
+import { readFile, writeFile } from '@teamcodex/shared/filesystem';
 
 const check = process.argv.includes('--check');
 const definitions = Object.entries(ERROR_CODES).sort((a, b) => a[1].opcode - b[1].opcode);

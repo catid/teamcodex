@@ -44,11 +44,29 @@ export default defineConfig([
     },
   },
   {
+    files: ['apps/**/*.ts', 'packages/proxy/**/*.ts', 'scripts/**/*.ts', 'e2e/**/*.ts'],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [{
+        group: ['fs', 'fs/*', 'node:fs', 'node:fs/*', '**/shared/src/**'],
+        message: 'Use @teamcodex/shared/filesystem and shared package exports for I/O.',
+      }] }],
+    },
+  },
+  {
+    files: ['packages/shared/src/**/*.ts'],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [{
+        group: ['@teamcodex/core', '@teamcodex/core/*', '@teamcodex/proxy', '@teamcodex/proxy/*', '@teamcodex/cli', '@teamcodex/cli/*', '**/core/**', '**/proxy/**', '**/apps/**', '../../*'],
+        message: 'Shared utilities must remain independent of application and domain policy.',
+      }] }],
+    },
+  },
+  {
     files: ['packages/core/src/**/*.ts'],
     rules: {
       'no-restricted-imports': ['error', { patterns: [{
-        group: ['node:*', 'bun', 'bun:*', '@teamcodex/proxy', '@teamcodex/proxy/*', '@teamcodex/cli', '@teamcodex/cli/*', '**/proxy/**', '**/apps/**', '../../*'],
-        message: 'Core owns pure domain policy; runtime I/O and application dependencies belong in proxy or CLI.',
+        group: ['node:*', 'bun', 'bun:*', '@teamcodex/shared/filesystem', '@teamcodex/shared/api-client', '@teamcodex/proxy', '@teamcodex/proxy/*', '@teamcodex/cli', '@teamcodex/cli/*', '**/proxy/**', '**/apps/**', '../../*'],
+        message: 'Core owns pure domain policy; runtime I/O belongs in shared and is orchestrated by proxy or CLI.',
       }] }],
     },
   },
@@ -56,8 +74,8 @@ export default defineConfig([
     files: ['packages/proxy/src/**/*.ts'],
     rules: {
       'no-restricted-imports': ['error', { patterns: [{
-        group: ['@teamcodex/cli', '@teamcodex/cli/*', '**/apps/**', '**/core/src/**'],
-        message: 'Proxy consumes core through package exports and cannot depend on CLI.',
+        group: ['fs', 'fs/*', 'node:fs', 'node:fs/*', '@teamcodex/cli', '@teamcodex/cli/*', '**/apps/**', '**/core/src/**', '**/shared/src/**'],
+        message: 'Proxy consumes core and shared through package exports; filesystem operations belong in shared.',
       }] }],
     },
   },

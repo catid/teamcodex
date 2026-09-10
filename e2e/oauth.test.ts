@@ -2,12 +2,12 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import { createDefaultConfig } from '@teamcodex/proxy/config';
+import { mkdir, mkdtemp, rm, stat, writeFile } from '@teamcodex/shared/filesystem';
 import { afterEach, test } from 'bun:test';
 
 import { readConfig } from './fixtures.ts';

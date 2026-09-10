@@ -1,0 +1,13 @@
+{
+  "name": "@teamcodex/shared",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./api-client": "./src/api-client.ts",
+    "./filesystem": "./src/filesystem.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2"
+  }
+}

@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- Generic provider API client and shared filesystem workspace with atomic writes and locking.
 - Weighted and adaptive account pools, bounded admission, and routing/reset mock tests.
 - Shared terminal panels and offline browser/device OAuth coverage.
 

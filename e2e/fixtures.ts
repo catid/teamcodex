@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 
 import { isRecord, validateConfig } from '@teamcodex/core/config';
+import { readFile } from '@teamcodex/shared/filesystem';
 
 /** Decode fixture files with the same boundary validation as the application. */
 export async function readConfig(path: string) {

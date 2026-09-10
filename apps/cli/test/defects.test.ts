@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync } from 'node:fs';
 
 import { usageLines } from '@teamcodex/cli/tui/usage';
 import type { AccountConfig } from '@teamcodex/core/config';
@@ -13,6 +12,7 @@ import { parseManualAuthInput } from '@teamcodex/proxy/auth/callback';
 import { accountInfoFromTokens } from '@teamcodex/proxy/auth/tokens';
 import { createDefaultConfig } from '@teamcodex/proxy/config';
 import { createProxyServer } from '@teamcodex/proxy/server';
+import { existsSync } from '@teamcodex/shared/filesystem';
 import { afterEach, test } from 'bun:test';
 
 const accounts: AccountConfig[] = [{ name: 'a', type: 'apikey', apiKey: 'secret-a' }, { name: 'b', type: 'apikey', apiKey: 'secret-b' }];

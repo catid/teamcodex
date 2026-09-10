@@ -1,6 +1,7 @@
 import type { Config } from '@teamcodex/core/config';
 import type { Counters } from '@teamcodex/core/usage';
 import type { AccountManager } from '@teamcodex/proxy/account-manager';
+import { httpClient } from '@teamcodex/shared/api-client';
 
 import { normalizeStatus } from './status-data.ts';
 type Status = ReturnType<typeof normalizeStatus>;
@@ -218,9 +219,9 @@ export async function statusCommand(config: Config, args: string[] = []): Promis
   const base = process.env.TEAMCODEX_SERVER_URL || `http://127.0.0.1:${config.proxy.port}`;
   let data: unknown;
   try {
-    const response = await fetch(`${base}/teamcodex/status`, {
+    const response = await httpClient.request({ url: `${base}/teamcodex/status`, options: {
       headers: { 'x-api-key': config.proxy.apiKey }, signal: AbortSignal.timeout(5000),
-    });
+    } });
     if (!response.ok) throw createError('PROXY_HTTP_ERROR', { status: response.status });
     data = await response.json();
   } catch (error) {

@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile,rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,6 +8,7 @@ import type { RoutingStrategy } from '@teamcodex/core/routing';
 import { AccountManager } from '@teamcodex/proxy/account-manager';
 import { atomicConfigUpdate, createDefaultConfig, loadConfig, resetConfig,saveConfig } from '@teamcodex/proxy/config';
 import { UsageResetMonitor } from '@teamcodex/proxy/usage-reset';
+import { mkdtemp, readFile,rm, writeFile } from '@teamcodex/shared/filesystem';
 import { afterEach, test } from 'bun:test';
 
 const json = (payload: unknown) => globalThis.Response.json(payload);

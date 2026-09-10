@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { Config } from '@teamcodex/core/config';
 import { telemetry } from '@teamcodex/core/telemetry';
+import { mkdtemp, readFile, rm } from '@teamcodex/shared/filesystem';
 import { afterEach, test } from 'bun:test';
 
 import { AccountManager } from '../src/account-manager.ts';

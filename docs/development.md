@@ -12,6 +12,7 @@ in this repository.
 
 | Area | Files |
 | --- | --- |
+| Generic provider HTTP client and filesystem mechanisms | `packages/shared/src/`; [shared I/O](shared-io.md) |
 | CLI dispatch, service wiring, token persistence, host Codex launch | `apps/cli/src/main.ts`, `apps/cli/src/commands/` |
 | HTTP forwarding, authentication, SSE parsing, request retries | `packages/proxy/src/http/`, `packages/proxy/src/retry.ts` |
 | Account selection, quota state, token refresh | `packages/proxy/src/account-manager.ts` |

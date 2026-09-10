@@ -1,11 +1,11 @@
 import { randomBytes } from 'node:crypto';
-import { chmod,copyFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import type { Config } from '@teamcodex/core/config';
 import { isRecord, validateConfig } from '@teamcodex/core/config';
 import { createError } from '@teamcodex/core/errors';
+import { atomicWrite, chmod, copyFile, readFile, withFileLock } from '@teamcodex/shared/filesystem';
 
 export function getConfigPath(): string {
   if (process.env.TEAMCODEX_CONFIG) return resolve(expandHome(process.env.TEAMCODEX_CONFIG));
@@ -64,39 +64,12 @@ export async function saveConfig(config: Config): Promise<void> {
 async function writeConfig(config: Config): Promise<void> {
   validateConfig(config);
   const path = getConfigPath();
-  await mkdir(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
-  try {
-    await writeFile(tmp, `${JSON.stringify(config, null, 2)  }\n`, { mode: 0o600, flag: 'wx' });
-    await rename(tmp, path);
-  } finally {
-    await rm(tmp, { force: true });
-  }
+  await atomicWrite(path, `${JSON.stringify(config, null, 2)}\n`, { createDirectory: true });
 }
 
-// mkdir is exclusive on both macOS and Linux. Hold the lock across the entire
-// read/modify/write transaction, including updates from other CLI processes.
-async function withConfigLock<T>(action: () => Promise<T>): Promise<T> {
+function withConfigLock<T>(action: () => Promise<T>): Promise<T> {
   const lock = `${getConfigPath()}.lock`;
-  await mkdir(dirname(lock), { recursive: true });
-  const deadline = Date.now() + 10_000;
-  while (true) {
-    try {
-      await mkdir(lock, { mode: 0o700 });
-      break;
-    } catch (err) {
-      if ((isRecord(err) ? err.code : undefined) !== 'EEXIST') throw err;
-      if (Date.now() >= deadline) {
-        throw createError('CONFIG_LOCKED', { lock }, { cause: err });
-      }
-      await new Promise(resolve => setTimeout(resolve, 25));
-    }
-  }
-  try {
-    return await action();
-  } finally {
-    await rm(lock, { recursive: true, force: true });
-  }
+  return withFileLock(lock, action, cause => createError('CONFIG_LOCKED', { lock }, { cause }));
 }
 
 /**

@@ -6,7 +6,9 @@
     "emitDeclarationOnly": true,
     "outDir": ".cache/types/tools",
     "paths": {
-      "typescript": ["./node_modules/typescript"]
+      "typescript": [
+        "./node_modules/typescript"
+      ]
     },
     "types": [
       "bun"
@@ -18,6 +20,9 @@
     "eslint.config.ts"
   ],
   "references": [
+    {
+      "path": "packages/shared"
+    },
     {
       "path": "packages/core"
     },

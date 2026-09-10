@@ -1,7 +1,7 @@
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { mkdtemp, readFile, rm, stat } from '@teamcodex/shared/filesystem';
 import { afterEach, expect, test } from 'bun:test';
 
 import { atomicConfigUpdate, createDefaultConfig, loadConfig, resetConfig, saveConfig } from '../src/config.ts';

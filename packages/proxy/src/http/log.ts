@@ -1,7 +1,7 @@
-import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { errorMessage } from '@teamcodex/core/errors';
+import { writeFile } from '@teamcodex/shared/filesystem';
 
 function logTimestamp() {
   const d = new Date();
