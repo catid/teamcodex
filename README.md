@@ -183,7 +183,9 @@ teamcodex update
 
 The command fast-forwards the installed checkout's current branch from its configured Git upstream, builds the new Docker image, and applies it with a health check. The existing service keeps running during the build; Compose replaces it when the image or service configuration changes. Existing accounts, configuration, and session history are retained. A stopped service starts after a successful build.
 
-Tracked local edits stop the update before pulling. Commit or stash those edits first. Local commits are retained; diverged branches require you to resolve the Git history. Untracked files are preserved, and Git refuses an update that would overwrite them. Updates to the same checkout are serialized with an automatically released lock. Git commands have a two-minute deadline, image builds ten minutes, and deployment waits up to two minutes for health. A failed build leaves the running service in place; a failed health check reports failure so you can inspect `teamcodex logs` and retry after fixing it.
+Once the service is healthy, the command runs `codex update` to upgrade the host Codex CLI through its own updater, which handles standalone, npm, and Homebrew installations. If Codex is not in `PATH`, that step is skipped. If it fails, TeamCodex itself is already updated and the command reports the Codex failure with a nonzero exit so you can run `codex update` manually. The update never touches operating-system packages or Docker itself.
+
+Tracked local edits stop the update before pulling. Commit or stash those edits first. Local commits are retained; diverged branches require you to resolve the Git history. Untracked files are preserved, and Git refuses an update that would overwrite them. Updates to the same checkout are serialized with an automatically released lock. Git commands have a two-minute deadline, image builds and the Codex CLI update ten minutes each, and deployment waits up to two minutes for health. A failed build leaves the running service in place; a failed health check reports failure so you can inspect `teamcodex logs` and retry after fixing it.
 
 For an older installation that does not yet recognize `update`, run `git -C ~/teamcodex pull --ff-only`, then `~/teamcodex/teamcodex.sh update`. If an existing shell still invokes an older npm launcher, use `type -a teamcodex` and `rehash` (zsh) or `hash -r` (Bash) to refresh command lookup. The expected installed command is `~/.local/bin/teamcodex`, pointing to this checkout's `teamcodex.sh`.
 
@@ -192,7 +194,7 @@ For an older installation that does not yet recognize `update`, run `git -C ~/te
 | Command | Behavior |
 | --- | --- |
 | `teamcodex build` | Build the Docker image from this checkout |
-| `teamcodex update` | Fast-forward the installed checkout, rebuild, apply the image, and wait for service health |
+| `teamcodex update` | Fast-forward the installed checkout, rebuild, apply the image, wait for service health, then run `codex update` |
 | `teamcodex serve` | Start in the background and wait for health; aliases: `start`, `server` |
 | `teamcodex stop` | Stop and remove the container and Compose network; retain host config |
 | `teamcodex restart` | Recreate the container and wait for health |

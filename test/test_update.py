@@ -21,7 +21,16 @@ class UpdateTests(unittest.TestCase):
         self.source = self.root / 'source'
         self.checkout = self.root / 'installed checkout'
         self.log = self.root / 'commands.log'
-        self.env = dict(os.environ, TEST_UPDATE_LOG=str(self.log), GIT_CONFIG_NOSYSTEM='1')
+        # A fake host Codex CLI shadows any real installation on PATH.
+        self.bin = self.root / 'bin'
+        self.bin.mkdir()
+        codex = self.bin / 'codex'
+        codex.write_text('#!/bin/sh\n'
+                         'printf "codex %s\\n" "$*" >> "$TEST_UPDATE_LOG"\n'
+                         'if [ "${TEST_CODEX_FAIL:-0}" = 1 ]; then exit 9; fi\n')
+        codex.chmod(0o755)
+        self.env = dict(os.environ, TEST_UPDATE_LOG=str(self.log), GIT_CONFIG_NOSYSTEM='1',
+                        PATH=f"{self.bin}{os.pathsep}{os.environ.get('PATH', '')}")
         self.git(self.root, 'init', '-q', '-b', 'main', str(self.source))
         self.git(self.source, 'config', 'user.email', 'test@example.invalid')
         self.git(self.source, 'config', 'user.name', 'Test')
@@ -58,7 +67,7 @@ class UpdateTests(unittest.TestCase):
         result = self.invoke()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('service is healthy', result.stdout)
-        self.assertEqual(self.log.read_text().splitlines(), ['new build', 'new start --wait-timeout 120'])
+        self.assertEqual(self.log.read_text().splitlines(), ['new build', 'new start --wait-timeout 120', 'codex update'])
         self.assertEqual(local.read_text(), 'keep me')
         self.assertEqual(self.git(self.checkout, 'rev-parse', 'HEAD'), self.git(self.source, 'rev-parse', 'HEAD'))
 
@@ -97,6 +106,21 @@ class UpdateTests(unittest.TestCase):
         result = self.invoke(TEST_HEALTH_FAIL='1')
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn('service is healthy', result.stdout)
+
+    def test_missing_host_codex_is_skipped(self):
+        system_path = os.pathsep.join(d for d in os.environ.get('PATH', '').split(os.pathsep)
+                                      if d.startswith('/usr/') or d in ('/bin', '/sbin'))
+        result = self.invoke(PATH=system_path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('skipping its update', result.stdout)
+        self.assertEqual(self.log.read_text().splitlines(), ['old build', 'old start --wait-timeout 120'])
+
+    def test_failed_codex_update_is_reported_after_the_service_update(self):
+        result = self.invoke(TEST_CODEX_FAIL='1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('service is healthy', result.stdout)
+        self.assertIn('Codex CLI update failed (exit 9)', result.stderr)
+        self.assertEqual(self.log.read_text().splitlines(), ['old build', 'old start --wait-timeout 120', 'codex update'])
 
     def test_concurrent_update_is_rejected(self):
         with (self.checkout / '.git/teamcodex-update.lock').open('a') as lock:

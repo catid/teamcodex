@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Fast-forward this installation, build it, and wait for service health."""
+"""Fast-forward this installation, build it, wait for service health, then update the host Codex CLI."""
 import fcntl
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
 
 
-def run(root, args, timeout=120, capture=False):
+def run(root, args, timeout=120, capture=False, failure=None):
     env = dict(os.environ, GIT_TERMINAL_PROMPT='0')
     if 'GIT_SSH_COMMAND' not in env and 'GIT_SSH' not in env:
         env['GIT_SSH_COMMAND'] = 'ssh -o BatchMode=yes -o ConnectTimeout=15'
@@ -29,7 +30,8 @@ def run(root, args, timeout=120, capture=False):
             pass
         raise
     if process.returncode:
-        raise RuntimeError(f'{args[0]} {args[1]} failed (exit {process.returncode}); update stopped')
+        raise RuntimeError(failure.format(exit=process.returncode) if failure else
+                           f'{args[0]} {args[1]} failed (exit {process.returncode}); update stopped')
     return (stdout or '').strip()
 
 
@@ -61,6 +63,20 @@ def update(root):
         print('Applying the image and waiting for service health.', flush=True)
         run(root, [launcher, 'start', '--wait-timeout', '120'], timeout=150)
         print(f'TeamCodex updated to {revision}; service is healthy.', flush=True)
+    update_codex(root)
+
+
+def update_codex(root):
+    """Upgrade the host Codex CLI with its own updater, which handles npm, Homebrew and standalone installs."""
+    codex = shutil.which('codex')
+    if codex is None:
+        print('Host Codex CLI not found in PATH; skipping its update.', flush=True)
+        return
+    print('Updating the host Codex CLI with `codex update`.', flush=True)
+    run(root, [codex, 'update'], timeout=600,
+        failure='TeamCodex is updated, but the host Codex CLI update failed (exit {exit}). '
+                'Run `codex update` manually or update its package.')
+    print('Host Codex CLI update finished.', flush=True)
 
 
 def main():
