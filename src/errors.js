@@ -17,7 +17,7 @@ export const ERROR_CODES = Object.freeze({
   CONFIG_HOST_INVALID: { opcode: 1004, message: 'proxy.host must be a nonempty string' },
   CONFIG_ACCOUNTS_INVALID: { opcode: 1005, message: 'accounts must be an array of named chatgpt or apikey accounts' },
   CONFIG_THRESHOLD_INVALID: { opcode: 1006, message: 'switchThreshold must be a number from 0 to 1' },
-  CONFIG_RETRY_INVALID: { opcode: 1007, message: 'retry requires maxRetries (0–5) and headerTimeoutSeconds/idleTimeoutSeconds (1–600)' },
+  CONFIG_RETRY_INVALID: { opcode: 1007, message: 'retry requires maxRetries (0–5), headerTimeoutSeconds/idleTimeoutSeconds (1–600), overloadBackoffSeconds (1–60) and overloadRetrySeconds (0 for unlimited, up to 86400)' },
   CONFIG_RESET_POLICY_INVALID: { opcode: 1008, message: 'autoReset requires enabled (boolean), threshold (0.01–1), and pollIntervalSeconds (30–3600)' },
   CONFIG_RESET_STATE_INVALID: { opcode: 1009, message: 'usageResetState contains invalid reset tracking data; preserve pending redemption IDs when repairing it' },
   CONFIG_UPSTREAM_INVALID: { opcode: 1010, message: '{key} must be an HTTP(S) URL without credentials' },

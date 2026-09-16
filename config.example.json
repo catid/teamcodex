@@ -25,7 +25,9 @@
   "retry": {
     "maxRetries": 2,
     "headerTimeoutSeconds": 60,
-    "idleTimeoutSeconds": 120
+    "idleTimeoutSeconds": 120,
+    "overloadBackoffSeconds": 1,
+    "overloadRetrySeconds": 0
   },
   "maxConcurrentRequests": 100,
   "routing": {

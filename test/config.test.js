@@ -46,6 +46,10 @@ test('config transactions, recovery, and permissions', async t => {
     const before = await readFile(getConfigPath(), 'utf8');
     await assert.rejects(atomicConfigUpdate(c => { c.proxy.port = -1; }), /proxy.port/);
     assert.equal(await readFile(getConfigPath(), 'utf8'), before);
+    await assert.rejects(atomicConfigUpdate(c => { c.retry = { overloadRetrySeconds: -1 }; }), /overloadRetrySeconds/);
+    await assert.rejects(atomicConfigUpdate(c => { c.retry = { overloadBackoffSeconds: 0 }; }), /overloadBackoffSeconds/);
+    await atomicConfigUpdate(c => { c.retry = { overloadBackoffSeconds: 2, overloadRetrySeconds: 0 }; });
+    assert.equal(await readFile(getConfigPath(), 'utf8') !== before, true);
     await atomicConfigUpdate(c => { c.switchThreshold = 0; });
   });
 

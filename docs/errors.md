@@ -29,7 +29,7 @@ native TypeError to avoid recursively calling a broken registry.
 | 1004 | `CONFIG_HOST_INVALID` | proxy.host must be a nonempty string |
 | 1005 | `CONFIG_ACCOUNTS_INVALID` | accounts must be an array of named chatgpt or apikey accounts |
 | 1006 | `CONFIG_THRESHOLD_INVALID` | switchThreshold must be a number from 0 to 1 |
-| 1007 | `CONFIG_RETRY_INVALID` | retry requires maxRetries (0–5) and headerTimeoutSeconds/idleTimeoutSeconds (1–600) |
+| 1007 | `CONFIG_RETRY_INVALID` | retry requires maxRetries (0–5), headerTimeoutSeconds/idleTimeoutSeconds (1–600), overloadBackoffSeconds (1–60) and overloadRetrySeconds (0 for unlimited, up to 86400) |
 | 1008 | `CONFIG_RESET_POLICY_INVALID` | autoReset requires enabled (boolean), threshold (0.01–1), and pollIntervalSeconds (30–3600) |
 | 1009 | `CONFIG_RESET_STATE_INVALID` | usageResetState contains invalid reset tracking data; preserve pending redemption IDs when repairing it |
 | 1010 | `CONFIG_UPSTREAM_INVALID` | {key} must be an HTTP(S) URL without credentials |

@@ -89,7 +89,11 @@ function validateConfig(config) {
     if (!r || typeof r !== 'object' || Array.isArray(r) ||
         (r.maxRetries !== undefined && (!Number.isInteger(r.maxRetries) || r.maxRetries < 0 || r.maxRetries > 5)) ||
         ['headerTimeoutSeconds', 'idleTimeoutSeconds'].some(key => r[key] !== undefined &&
-          (!Number.isFinite(r[key]) || r[key] < 1 || r[key] > 600))) {
+          (!Number.isFinite(r[key]) || r[key] < 1 || r[key] > 600)) ||
+        (r.overloadBackoffSeconds !== undefined &&
+          (!Number.isFinite(r.overloadBackoffSeconds) || r.overloadBackoffSeconds < 1 || r.overloadBackoffSeconds > 60)) ||
+        (r.overloadRetrySeconds !== undefined &&
+          (!Number.isFinite(r.overloadRetrySeconds) || r.overloadRetrySeconds < 0 || r.overloadRetrySeconds > 86400))) {
       throw createError('CONFIG_RETRY_INVALID');
     }
   }

@@ -163,13 +163,15 @@ teamcodex logs   # Automatic usage reset events
 
 The proxy retries transient connection errors, response timeouts, and HTTP 408/500/502/503/504 up to twice, switching accounts between attempts. HTTP 401 gets one token refresh per account before rotation; HTTP 429 and embedded rate-limit errors immediately rotate through the available pool. Request bodies and any supplied idempotency key are preserved. Transient token-refresh outages temporarily back off an account and allow recovery instead of permanently disabling it.
 
+A model at capacity (an HTTP 503 or a `response.failed` event with the error code `server_is_overloaded`, which Codex reports as "Selected model is at capacity") is never passed to Codex while the client is still waiting. Codex treats that error as fatal and ends the turn, so the proxy instead backs off, switches accounts, and retries the identical request until the model answers or the client disconnects. The wait doubles from `overloadBackoffSeconds` up to 30 seconds, or follows an upstream `Retry-After` of up to 60 seconds. Set `overloadRetrySeconds` to cap the total wait; the default `0` keeps retrying indefinitely. When the cap is reached, the last upstream response is passed through so Codex reports the error itself.
+
 ```json
-"retry": { "maxRetries": 2, "headerTimeoutSeconds": 60, "idleTimeoutSeconds": 120 }
+"retry": { "maxRetries": 2, "headerTimeoutSeconds": 60, "idleTimeoutSeconds": 120, "overloadBackoffSeconds": 1, "overloadRetrySeconds": 0 }
 ```
 
-Each attempt waits at most 60 seconds for headers and 120 seconds between response chunks. Active streams can run longer; activity renews the idle deadline. A stalled connection is aborted. Retries only occur before any response reaches the client. If a stream fails after output begins, the proxy closes it so Codex can handle recovery without the proxy replaying partial output. A retry before output can still repeat provider work if the provider accepted the earlier request but its response was lost.
+Each attempt waits at most 60 seconds for headers and 120 seconds between response chunks. Active streams can run longer; activity renews the idle deadline. A stalled connection is aborted. Retries only occur before any response reaches the client. Stream preamble events (`response.created`, `response.in_progress`) are held until model output follows them, so an early failure can still be retried. If a stream fails after output begins, the proxy closes it so Codex can handle recovery without the proxy replaying partial output. A retry before output can still repeat provider work if the provider accepted the earlier request but its response was lost.
 
-When every account is unavailable, the proxy allows up to five seconds for a coalesced usage/reset recovery check, then returns a bounded response with `Retry-After`. Usage polling handles three accounts concurrently so one slow account does not block the whole pool. Fresh reduced usage can restore a throttled account. Request and buffered response bodies are limited to 32 MiB; individual SSE events to 1 MiB. Retry counts can be 0–5, timeouts 1–600 seconds. Restart after editing settings.
+When every account is unavailable, the proxy allows up to five seconds for a coalesced usage/reset recovery check, then returns a bounded response with `Retry-After`. Usage polling handles three accounts concurrently so one slow account does not block the whole pool. Fresh reduced usage can restore a throttled account. Request and buffered response bodies are limited to 32 MiB; individual SSE events to 1 MiB. Retry counts can be 0–5, timeouts 1–600 seconds, `overloadBackoffSeconds` 1–60, and `overloadRetrySeconds` 0 (unlimited) to 86400. Restart after editing settings.
 
 ## Updating
 

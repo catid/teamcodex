@@ -42,9 +42,13 @@ The two paths have different config locations, documented in the README.
   (`test/accounts.test.js`, `test/server.test.js`).
 - **Forwarding and retries:** ChatGPT paths pass through; API-key accounts rewrite
   Codex response paths to the public API. Preserve bounded retries and immediate
-  429 rotation. Once output is sent, close a failed stream instead of replaying the
+  429 rotation. A model-at-capacity response (`server_is_overloaded`, HTTP 503 or
+  `response.failed`) is retried with backoff across accounts until it succeeds, the
+  client disconnects, or `retry.overloadRetrySeconds` is spent; Codex ends the turn
+  on that error, so never surface it early. Hold stream preamble events until output
+  follows them. Once output is sent, close a failed stream instead of replaying the
   request. Preserve client-disconnect cancellation, idle deadlines, and incremental
-  SSE parsing (`test/server.test.js`).
+  SSE parsing (`test/server.test.js`, `test/retry.test.js`).
 - **Usage-reset persistence:** reserve a redemption on disk before its POST. Retain
   its request ID when the outcome is uncertain, reuse that ID on retry, and preserve
   pending IDs and cooldowns through installation reset. Verify usage afterward

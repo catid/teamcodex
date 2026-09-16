@@ -547,3 +547,93 @@ test('adaptive pool routing keeps persistent retry accounting and pool isolation
   assert.equal(status.accounts[2].adaptive.samples, 0);
   assert.ok(status.accounts.every(account => account.adaptive.inFlight === 0));
 });
+
+const overloaded = '{"error":{"code":"server_is_overloaded","message":"The server is overloaded."}}';
+const quickOverload = { retry: { maxRetries: 2, headerTimeoutSeconds: 1, idleTimeoutSeconds: 1, overloadBackoffSeconds: 0.01 } };
+
+test('HTTP 503 model-at-capacity responses retry beyond the transient budget until the model answers', async t => {
+  const seen = [];
+  const { url, manager } = await setup(t, (req, res) => {
+    seen.push(req.headers.authorization);
+    if (seen.length <= 4) { res.writeHead(503, { 'content-type': 'application/json' }); res.end(overloaded); return; }
+    res.end('hello');
+  }, undefined, quickOverload);
+  const response = await fetch(`${url}/responses`, { method: 'POST', body: '{}', signal: AbortSignal.timeout(5000) });
+  assert.equal(await response.text(), 'hello');
+  assert.equal(seen.length, 5);
+  assert.deepEqual([...new Set(seen)].sort(), ['Bearer first', 'Bearer second']);
+  assert.ok(manager.accounts.every(a => a.status === 'active'));
+});
+
+test('a streamed model-at-capacity failure after the response preamble retries without sending partial output', async t => {
+  let attempts = 0;
+  const { url, manager } = await setup(t, (_req, res) => {
+    attempts++;
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write('data: {"type":"response.created","response":{"id":"resp_1"}}\n\ndata: {"type":"response.in_progress","response":{"id":"resp_1"}}\n\n');
+    if (attempts === 1) {
+      res.end('data: {"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"code":"server_is_overloaded","message":"This model is disabled."}}}\n\n');
+    } else {
+      res.end('data: {"type":"response.output_text.delta","delta":"hello"}\n\ndata: {"type":"response.completed","response":{"usage":{"input_tokens":2,"output_tokens":1}}}\n\n');
+    }
+  }, [key('first')], quickOverload);
+  const response = await fetch(`${url}/responses`, { signal: AbortSignal.timeout(5000) });
+  assert.equal(response.status, 200);
+  const text = await response.text();
+  assert.equal(text.match(/response\.created/g).length, 1);
+  assert.doesNotMatch(text, /response\.failed/);
+  assert.match(text, /hello/);
+  assert.equal(attempts, 2);
+  assert.equal(manager.accounts[0].status, 'active');
+  assert.equal(manager.accounts[0].usage.totalInputTokens, 2);
+});
+
+test('a streamed model-at-capacity failure after real output closes the stream instead of replaying', async t => {
+  let attempts = 0;
+  const { url, manager } = await setup(t, (_req, res) => {
+    attempts++;
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write('data: {"type":"response.output_text.delta","delta":"partial"}\n\n');
+    res.end('data: {"type":"response.failed","response":{"error":{"code":"server_is_overloaded"}}}\n\n');
+  }, [key('first')], quickOverload);
+  await assert.rejects(fetch(`${url}/responses`, { signal: AbortSignal.timeout(5000) }).then(response => response.text()));
+  assert.equal(attempts, 1);
+  assert.equal(manager.accounts[0].status, 'active');
+});
+
+test('model-at-capacity retries stop at the configured budget and surface the upstream response', async t => {
+  let attempts = 0;
+  const { url } = await setup(t, (_req, res) => {
+    attempts++;
+    res.writeHead(503, { 'content-type': 'application/json' });
+    res.end(overloaded);
+  }, [key('first')], { retry: { ...quickOverload.retry, overloadRetrySeconds: 0.05 } });
+  const response = await fetch(`${url}/responses`, { signal: AbortSignal.timeout(5000) });
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, 'server_is_overloaded');
+  assert.ok(attempts >= 2 && attempts <= 4, `attempts=${attempts}`);
+});
+
+test('client disconnect during a model-at-capacity wait stops retrying', async t => {
+  let attempts = 0;
+  let arrived;
+  const arrival = new Promise(resolve => { arrived = resolve; });
+  const { url } = await setup(t, (_req, res) => {
+    attempts++;
+    res.writeHead(503, { 'content-type': 'application/json' });
+    res.end(overloaded);
+    arrived();
+  }, [key('first')], { retry: { ...quickOverload.retry, overloadBackoffSeconds: 1 } });
+  const controller = new AbortController();
+  const pending = fetch(`${url}/responses`, { signal: controller.signal });
+  await arrival;
+  await new Promise(resolve => setTimeout(resolve, 50));
+  controller.abort();
+  await assert.rejects(pending);
+  for (let i = 0; i < 50; i++) {
+    if ((await (await fetch(`${url}/teamcodex/status`)).json()).service.inFlight === 0) break;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.equal((await (await fetch(`${url}/teamcodex/status`)).json()).service.inFlight, 0);
+  assert.equal(attempts, 1);
+});

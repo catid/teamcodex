@@ -1,9 +1,10 @@
 import { mkdir,writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { createError, errorMessage, errorResponse } from './errors.js';
-import { isTransientError, retryDelay,retryPolicy, TRANSIENT_STATUSES } from './retry.js';
+import { isTransientError, overloadRetryDelaySeconds, retryDelay, retryPolicy, TRANSIENT_STATUSES } from './retry.js';
 
 
 const HOP_BY_HOP_HEADERS = new Set([
@@ -19,6 +20,15 @@ const HOP_BY_HOP_HEADERS = new Set([
 const DEFAULT_429_BACKOFF_SECONDS = 60;
 const DEFAULT_EMBEDDED_429_RETRY_SECONDS = 3600;
 const EMBEDDED_429_RE = /\b(?:429|too many requests|rate.?limit|exceeded retry limit)\b/i;
+// The backend reports a model at capacity as HTTP 503 or a response.failed
+// event whose error code is server_is_overloaded. Codex treats that as a fatal
+// turn error ("Selected model is at capacity"), so the proxy keeps retrying
+// instead of surfacing it.
+const OVERLOAD_ERROR_CODE = 'server_is_overloaded';
+const OVERLOAD_RE = /\b(?:server_is_overloaded|server is overloaded|model is at capacity)\b/i;
+// Stream events that precede any model output. They are held back until real
+// output arrives so an early failure can still be retried on another account.
+const PREAMBLE_EVENT_TYPES = new Set(['response.created', 'response.in_progress', 'response.queued']);
 
 export function createProxyServer(accountManager, config, hooks = {}) {
   const upstream = config.upstream || 'https://chatgpt.com';
@@ -100,7 +110,7 @@ export function createProxyServer(accountManager, config, hooks = {}) {
       // Track request
       const reqId = ++requestCounter;
       const requestStarted = performance.now();
-      const ctx = { account: null, accountRef: null, status: null, attempts: 0, excluded: new Set(), poolName, maxAccountRetries: accountManager.accounts.length * 2, networkRetries: 0, recovered: false, refreshed: new Set() };
+      const ctx = { account: null, accountRef: null, status: null, attempts: 0, excluded: new Set(), poolName, maxAccountRetries: accountManager.accounts.length * 2, networkRetries: 0, overloadRetries: 0, overloadStarted: null, recovered: false, refreshed: new Set() };
       let recorded = false;
       const recordRequest = () => {
         if (recorded) return;
@@ -330,15 +340,67 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
       headerLatency = performance.now() - attemptStarted;
       failed = upstreamRes.status === 429 || upstreamRes.status >= 500;
       touch();
-      if (TRANSIENT_STATUSES.has(upstreamRes.status) && ctx.networkRetries < upstreams.retry.maxRetries) {
-        await upstreamRes.body?.cancel();
+
+      // A model-at-capacity response is never surfaced while the client waits:
+      // back off, move to the next account and retry the identical request.
+      // The retry budget is unlimited unless retry.overloadRetrySeconds is set.
+      const retryOverload = async replay => {
+        failed = true;
         clearTimeout(timeout);
-        await retryDelay(ctx.networkRetries++, controller.signal);
+        const policy = upstreams.retry;
+        ctx.overloadRetries++;
+        ctx.overloadStarted ??= performance.now();
+        const elapsed = (performance.now() - ctx.overloadStarted) / 1000;
+        const waitSecs = overloadRetryDelaySeconds(ctx.overloadRetries, policy.overloadBackoffSeconds,
+          parseRetryAfter(upstreamRes.headers.get('retry-after')));
+        const exhausted = policy.overloadRetrySeconds > 0 && elapsed + waitSecs > policy.overloadRetrySeconds;
+        if (logDir) {
+          logSections.push(`=== RESPONSE ${replay.status} — model at capacity, ${exhausted ? 'retry budget spent' : `retrying in ${waitSecs}s`} ===\n${replay.body}`);
+          writeRequestLog(logDir, reqId, logSections);
+        }
+        if (exhausted) {
+          console.log(`[TeamCodex] Model at capacity on "${account.name}" — giving up after ${Math.round(elapsed)}s and ${ctx.overloadRetries} attempts`);
+          ctx.status = replay.status;
+          res.writeHead(replay.status, replay.headers);
+          res.end(replay.body);
+          return;
+        }
+        console.log(`[TeamCodex] Model at capacity on "${account.name}" — retrying in ${waitSecs}s (attempt ${ctx.overloadRetries})`);
+        await delay(waitSecs * 1000, undefined, { signal: controller.signal });
         ctx.excluded.add(account);
         if (!accountManager.routing) accountManager.rotateAfter(account);
         lease.observe(failed, headerLatency);
         lease.release();
         return forwardRequest(req, res, body, accountManager, upstreams, retryCount, hooks, reqId, ctx, logDir);
+      };
+
+      // Build response headers (skip hop-by-hop and encoding headers)
+      const responseHeaders = {};
+      for (const [key, value] of upstreamRes.headers.entries()) {
+        if (key === 'transfer-encoding' || key === 'connection') continue;
+        // Strip content-encoding/content-length since fetch may auto-decompress
+        if (key === 'content-encoding' || key === 'content-length') continue;
+        responseHeaders[key] = value;
+      }
+
+      // Transient failure bodies are read up front: a 503 may carry the
+      // model-at-capacity signal, and a passthrough after the retry budget
+      // still needs the body.
+      let bufferedBody = null;
+      if (TRANSIENT_STATUSES.has(upstreamRes.status)) {
+        bufferedBody = upstreamRes.body ? await readResponseBody(upstreamRes.body, touch) : Buffer.alloc(0);
+        if (isOverloadedBody(bufferedBody)) {
+          return retryOverload({ status: upstreamRes.status, headers: responseHeaders, body: bufferedBody });
+        }
+        if (ctx.networkRetries < upstreams.retry.maxRetries) {
+          clearTimeout(timeout);
+          await retryDelay(ctx.networkRetries++, controller.signal);
+          ctx.excluded.add(account);
+          if (!accountManager.routing) accountManager.rotateAfter(account);
+          lease.observe(failed, headerLatency);
+          lease.release();
+          return forwardRequest(req, res, body, accountManager, upstreams, retryCount, hooks, reqId, ctx, logDir);
+        }
       }
 
       // Extract rate limit headers
@@ -413,15 +475,6 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
         logSections.push(`=== RESPONSE ${upstreamRes.status} ===\n${formatHeaders(upstreamRes.headers)}`);
       }
 
-      // Build response headers (skip hop-by-hop and encoding headers)
-      const responseHeaders = {};
-      for (const [key, value] of upstreamRes.headers.entries()) {
-        if (key === 'transfer-encoding' || key === 'connection') continue;
-        // Strip content-encoding/content-length since fetch may auto-decompress
-        if (key === 'content-encoding' || key === 'content-length') continue;
-        responseHeaders[key] = value;
-      }
-
       if (!upstreamRes.body) {
         if (logDir) {
           logSections.push(`=== RESPONSE BODY ===\n(empty)`);
@@ -439,12 +492,20 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
       const isStreaming = contentType.includes('text/event-stream') ||
         (!contentType && (req.headers['accept'] || '').includes('text/event-stream'));
 
-      if (isStreaming) {
+      if (isStreaming && !bufferedBody) {
         const streamLog = logDir ? [] : null;
         const streamResult = await streamResponse(upstreamRes.body, res, upstreamRes.status, responseHeaders, account, accountManager, streamLog, touch, controller.signal);
         if (logDir) {
           logSections.push(`=== RESPONSE BODY (streamed) ===\n${streamLog.join('')}`);
           writeRequestLog(logDir, reqId, logSections);
+        }
+        if (streamResult.overloaded) {
+          if (!streamResult.bytesSent) {
+            return retryOverload({ status: upstreamRes.status, headers: responseHeaders, body: streamResult.replay });
+          }
+          failed = true;
+          ctx.status = upstreamRes.status;
+          return;
         }
         if (streamResult.embedded429) {
           failed = true;
@@ -461,15 +522,7 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
         }
         ctx.status = upstreamRes.status;
       } else {
-        const chunks = [];
-        let size = 0;
-        for await (const chunk of upstreamRes.body) {
-          touch();
-          size += chunk.length;
-          if (size > 32 * 1024 * 1024) throw createError('UPSTREAM_RESPONSE_TOO_LARGE');
-          chunks.push(chunk);
-        }
-        const buf = Buffer.concat(chunks);
+        const buf = bufferedBody ?? await readResponseBody(upstreamRes.body, touch);
         const bodyResult = inspectResponseBody(buf, account, accountManager);
         if (logDir) {
           try {
@@ -478,6 +531,9 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
             logSections.push(`=== RESPONSE BODY (${buf.length} bytes) ===\n${buf.toString().slice(0, 8192)}`);
           }
           writeRequestLog(logDir, reqId, logSections);
+        }
+        if (bodyResult.overloaded) {
+          return retryOverload({ status: upstreamRes.status, headers: responseHeaders, body: buf });
         }
         if (bodyResult.embedded429) {
           failed = true;
@@ -547,7 +603,37 @@ function writeRoutingChanged(res, ctx) {
 }
 
 /**
+ * Buffer a whole upstream body, renewing the idle deadline per chunk.
+ * @param {ReadableStream<Uint8Array>} webStream
+ * @param {() => void} touch
+ * @returns {Promise<Buffer>}
+ */
+async function readResponseBody(webStream, touch) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of webStream) {
+    touch();
+    size += chunk.length;
+    if (size > 32 * 1024 * 1024) throw createError('UPSTREAM_RESPONSE_TOO_LARGE');
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
+/** @param {Buffer} buffer */
+function isOverloadedBody(buffer) {
+  try {
+    return isOverloadedPayload(JSON.parse(buffer.toString()));
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Stream an SSE response to the client, parsing usage data along the way.
+ * Preamble events are held until model output follows them, so a failure that
+ * arrives first leaves nothing sent and the request can be retried.
+ * @returns {Promise<{embedded429: boolean, overloaded: boolean, bytesSent: boolean, replay?: string}>}
  */
 async function streamResponse(webStream, res, status, headers, accountIndex, accountManager, streamLog, touch, signal) {
   const reader = webStream.getReader();
@@ -556,6 +642,7 @@ async function streamResponse(webStream, res, status, headers, accountIndex, acc
   let sseBuffer = '';
   const streamState = { embedded429Seen: false };
   let bytesSent = false;
+  let pending = '';
   let shouldEnd = true;
   const onClose = () => { reader.cancel().catch(() => {}); };
   res.once('close', onClose);
@@ -584,43 +671,31 @@ async function streamResponse(webStream, res, status, headers, accountIndex, acc
 
       for (const event of events) {
         const eventText = `${event}\n\n`;
-        const eventResult = inspectSSEEvent(event, accountIndex, accountManager, streamState);
-        if (eventResult.embedded429) {
-          shouldEnd = false;
-          if (bytesSent) {
-            res.destroy();
-          }
-          return { embedded429: true, bytesSent };
-        }
-
-        bytesSent = await writeStreamChunk(res, status, headers, eventText, bytesSent);
+        const failure = await handleEvent(event, eventText);
+        if (failure) return failure;
         if (res.destroyed) {
           shouldEnd = false;
-          return { embedded429: false, bytesSent };
+          return { embedded429: false, overloaded: false, bytesSent };
         }
       }
     }
 
-    if (!bytesSent && !sseBuffer && !res.destroyed) throw createError('UPSTREAM_STREAM_EMPTY');
+    if (!bytesSent && !pending && !sseBuffer && !res.destroyed) throw createError('UPSTREAM_STREAM_EMPTY');
     const trailing = decoder.decode();
     if (trailing) {
       sseBuffer += trailing;
     }
 
     if (sseBuffer.length > 0) {
-      const eventResult = inspectSSEEvent(sseBuffer, accountIndex, accountManager, streamState);
-      if (eventResult.embedded429) {
-        shouldEnd = false;
-        if (bytesSent) {
-          res.destroy();
-        }
-        return { embedded429: true, bytesSent };
-      }
-
-      bytesSent = await writeStreamChunk(res, status, headers, sseBuffer, bytesSent);
+      const failure = await handleEvent(sseBuffer, sseBuffer);
+      if (failure) return failure;
+    }
+    if (pending) {
+      bytesSent = await writeStreamChunk(res, status, headers, pending, bytesSent);
+      pending = '';
     }
 
-    return { embedded429: false, bytesSent };
+    return { embedded429: false, overloaded: false, bytesSent };
   } catch (err) {
     shouldEnd = false;
     if (res.headersSent) res.destroy();
@@ -635,6 +710,29 @@ async function streamResponse(webStream, res, status, headers, accountIndex, acc
       }
       res.end();
     }
+  }
+
+  /**
+   * Inspect one event, then either hold it (preamble), forward it, or report a
+   * failure that the caller may retry when nothing has been sent yet.
+   * @returns {Promise<{embedded429: boolean, overloaded: boolean, bytesSent: boolean, replay?: string} | null>}
+   */
+  async function handleEvent(event, eventText) {
+    const eventResult = inspectSSEEvent(event, accountIndex, accountManager, streamState);
+    if (eventResult.embedded429 || eventResult.overloaded) {
+      shouldEnd = false;
+      if (bytesSent) {
+        res.destroy();
+      }
+      return { embedded429: eventResult.embedded429, overloaded: eventResult.overloaded, bytesSent, replay: pending + eventText };
+    }
+    if (PREAMBLE_EVENT_TYPES.has(eventResult.eventType)) {
+      pending += eventText;
+      return null;
+    }
+    bytesSent = await writeStreamChunk(res, status, headers, pending + eventText, bytesSent);
+    pending = '';
+    return null;
   }
 
   async function writeStreamChunk(res, status, headers, chunk, hasWritten) {
@@ -669,19 +767,24 @@ async function streamResponse(webStream, res, status, headers, accountIndex, acc
   }
 }
 
+const NO_FAILURE = Object.freeze({ embedded429: false, overloaded: false });
+
+/** @returns {{embedded429: boolean, overloaded: boolean, eventType?: string}} */
 function inspectSSEEvent(event, accountIndex, accountManager, state) {
   const dataLines = event.split('\n')
     .filter(l => l.startsWith('data:'))
     .map(l => l.slice(5).replace(/^ /, '').replace(/\r$/, ''));
-  if (dataLines.length === 0) return { embedded429: false };
+  if (dataLines.length === 0) return NO_FAILURE;
 
   try {
     const dataText = dataLines.join('\n');
-    if (dataText === '[DONE]') return { embedded429: false };
-    return inspectResponsePayload(JSON.parse(dataText), accountIndex, accountManager, state);
+    if (dataText === '[DONE]') return NO_FAILURE;
+    const data = JSON.parse(dataText);
+    const eventType = typeof data?.type === 'string' ? data.type : undefined;
+    return { ...inspectResponsePayload(data, accountIndex, accountManager, state), eventType };
   } catch {
     // not valid JSON, skip
-    return { embedded429: false };
+    return NO_FAILURE;
   }
 }
 
@@ -690,7 +793,7 @@ function inspectResponseBody(buffer, accountIndex, accountManager) {
     return inspectResponsePayload(JSON.parse(buffer.toString()), accountIndex, accountManager, { embedded429Seen: false });
   } catch {
     // not JSON
-    return { embedded429: false };
+    return NO_FAILURE;
   }
 }
 
@@ -710,10 +813,20 @@ function inspectResponsePayload(data, accountIndex, accountManager, state) {
   if (!state.embedded429Seen && isEmbedded429Payload(data)) {
     state.embedded429Seen = true;
     markEmbedded429(accountIndex, accountManager);
-    return { embedded429: true };
+    return { embedded429: true, overloaded: false };
   }
+  if (isOverloadedPayload(data)) return { embedded429: false, overloaded: true };
 
-  return { embedded429: false };
+  return NO_FAILURE;
+}
+
+/** A model-at-capacity error envelope, as Codex recognises it. */
+function isOverloadedPayload(data) {
+  if (!data || typeof data !== 'object') return false;
+  const error = data.error ?? data.response?.error;
+  if (!error) return false;
+  if (typeof error === 'string') return OVERLOAD_RE.test(error);
+  return typeof error === 'object' && (error.code === OVERLOAD_ERROR_CODE || OVERLOAD_RE.test(errorDetailsToText(error)));
 }
 
 function isEmbedded429Payload(data) {
