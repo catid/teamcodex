@@ -29,6 +29,7 @@ const OVERLOAD_RE = /\b(?:server_is_overloaded|server is overloaded|model is at 
 // Stream events that precede any model output. They are held back until real
 // output arrives so an early failure can still be retried on another account.
 const PREAMBLE_EVENT_TYPES = new Set(['response.created', 'response.in_progress', 'response.queued']);
+const TERMINAL_EVENT_TYPES = new Set(['response.completed', 'response.failed', 'response.incomplete']);
 
 export function createProxyServer(accountManager, config, hooks = {}) {
   const upstream = config.upstream || 'https://chatgpt.com';
@@ -149,7 +150,7 @@ export function createProxyServer(accountManager, config, hooks = {}) {
           res.writeHead(502, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(errorResponse('PROXY_INTERNAL_ERROR')));
         } else {
-          res.destroy();
+          endInterruptedStream(res);
         }
       }
     } catch (err) {
@@ -583,7 +584,7 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
         res.writeHead(502, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(errorResponse('UPSTREAM_FAILED', { message: err.message })));
       } else {
-        res.destroy();
+        endInterruptedStream(res);
       }
     } finally {
       clearTimeout(timeout);
@@ -593,6 +594,19 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
     if (failed || (headerLatency !== undefined && !res.destroyed)) lease.observe(failed, headerLatency);
     lease.release();
   }
+}
+
+/**
+ * End the HTTP body cleanly so Codex sees a retryable Responses failure instead
+ * of a body-decoding error. Never claim completion or replay delivered output.
+ * Codex 0.154 records response.failed and handles its error when SSE reaches EOF.
+ * @param {http.ServerResponse} res
+ */
+function endInterruptedStream(res) {
+  if (res.destroyed || res.writableEnded) return;
+  const event = { type: 'response.failed', response: { status: 'failed',
+    ...errorResponse('UPSTREAM_STREAM_INTERRUPTED') } };
+  res.end(`data: ${JSON.stringify(event)}\n\n`);
 }
 
 /** @param {http.ServerResponse} res @param {{status: number | null}} ctx */
@@ -633,6 +647,15 @@ function isOverloadedBody(buffer) {
  * Stream an SSE response to the client, parsing usage data along the way.
  * Preamble events are held until model output follows them, so a failure that
  * arrives first leaves nothing sent and the request can be retried.
+ * @param {ReadableStream<Uint8Array>} webStream
+ * @param {http.ServerResponse} res
+ * @param {number} status
+ * @param {Record<string, string>} headers
+ * @param {ReturnType<import('./account-manager.js').AccountManager['_buildAccount']>} accountIndex
+ * @param {import('./account-manager.js').AccountManager} accountManager
+ * @param {string[] | null} streamLog
+ * @param {() => void} touch
+ * @param {AbortSignal} signal
  * @returns {Promise<{embedded429: boolean, overloaded: boolean, bytesSent: boolean, replay?: string}>}
  */
 async function streamResponse(webStream, res, status, headers, accountIndex, accountManager, streamLog, touch, signal) {
@@ -643,6 +666,7 @@ async function streamResponse(webStream, res, status, headers, accountIndex, acc
   const streamState = { embedded429Seen: false };
   let bytesSent = false;
   let pending = '';
+  let sawResponseEvent = false;
   let shouldEnd = true;
   const onClose = () => { reader.cancel().catch(() => {}); };
   res.once('close', onClose);
@@ -680,25 +704,21 @@ async function streamResponse(webStream, res, status, headers, accountIndex, acc
       }
     }
 
-    if (!bytesSent && !pending && !sseBuffer && !res.destroyed) throw createError('UPSTREAM_STREAM_EMPTY');
     const trailing = decoder.decode();
     if (trailing) {
       sseBuffer += trailing;
     }
 
-    if (sseBuffer.length > 0) {
-      const failure = await handleEvent(sseBuffer, sseBuffer);
-      if (failure) return failure;
+    if (res.destroyed) return { ...NO_FAILURE, bytesSent };
+    // A clean TCP EOF is not a completed Responses request. Do not publish the
+    // buffered preamble or an incomplete JSON event from a truncated attempt.
+    if (sseBuffer.trim() || pending || sawResponseEvent) {
+      throw createError('UPSTREAM_STREAM_INTERRUPTED');
     }
-    if (pending) {
-      bytesSent = await writeStreamChunk(res, status, headers, pending, bytesSent);
-      pending = '';
-    }
-
+    if (!bytesSent) throw createError('UPSTREAM_STREAM_EMPTY');
     return { embedded429: false, overloaded: false, bytesSent };
   } catch (err) {
     shouldEnd = false;
-    if (res.headersSent) res.destroy();
     throw err;
   } finally {
     res.removeListener('close', onClose);
@@ -719,19 +739,24 @@ async function streamResponse(webStream, res, status, headers, accountIndex, acc
    */
   async function handleEvent(event, eventText) {
     const eventResult = inspectSSEEvent(event, accountIndex, accountManager, streamState);
+    if (eventResult.eventType?.startsWith('response.')) sawResponseEvent = true;
     if (eventResult.embedded429 || eventResult.overloaded) {
       shouldEnd = false;
       if (bytesSent) {
-        res.destroy();
+        endInterruptedStream(res);
       }
       return { embedded429: eventResult.embedded429, overloaded: eventResult.overloaded, bytesSent, replay: pending + eventText };
     }
+    const comment = event.split('\n').every(line => !line.trim() || line.startsWith(':'));
+    if (!bytesSent && comment) return null;
     if (PREAMBLE_EVENT_TYPES.has(eventResult.eventType)) {
       pending += eventText;
+      if (pending.length > 32 * 1024 * 1024) throw createError('UPSTREAM_RESPONSE_TOO_LARGE');
       return null;
     }
     bytesSent = await writeStreamChunk(res, status, headers, pending + eventText, bytesSent);
     pending = '';
+    if (TERMINAL_EVENT_TYPES.has(eventResult.eventType)) return { ...NO_FAILURE, bytesSent };
     return null;
   }
 

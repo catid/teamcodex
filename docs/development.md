@@ -46,9 +46,14 @@ The two paths have different config locations, documented in the README.
   `response.failed`) is retried with backoff across accounts until it succeeds, the
   client disconnects, or `retry.overloadRetrySeconds` is spent; Codex ends the turn
   on that error, so never surface it early. Hold stream preamble events until output
-  follows them. Once output is sent, close a failed stream instead of replaying the
-  request. Preserve client-disconnect cancellation, idle deadlines, and incremental
-  SSE parsing (`test/server.test.js`, `test/retry.test.js`).
+  follows them. Once output is sent, append a standard `response.failed` event and
+  finish the SSE body instead of replaying the request or destroying the HTTP
+  connection. Preserve client-disconnect cancellation, idle deadlines, and
+  incremental SSE parsing (`test/server.test.js`, `test/retry.test.js`).
+  Stop reading at terminal Responses events; provider EOF is not required after
+  completion. EOF before a terminal event is a failure, including clean EOF after
+  a preamble. Discard incomplete trailing events. Keepalive comments before output
+  must not commit client headers and prevent retries.
 - **Usage-reset persistence:** reserve a redemption on disk before its POST. Retain
   its request ID when the outcome is uncertain, reuse that ID on retry, and preserve
   pending IDs and cooldowns through installation reset. Verify usage afterward
@@ -127,3 +132,23 @@ from provider quota/reset-credit policy. Explicit pools retain their configured
 strategy; randomized initial/rotation order applies to legacy unpooled routing.
 The AccountManager test RNG is the fourth constructor argument, leaving the third
 argument available for routing configuration.
+
+## Responses stream recovery
+
+Reviewed the [official streaming guide](https://developers.openai.com/api/docs/guides/streaming-responses)
+and [Codex 0.154.0's SSE reader](https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/codex-api/src/sse/responses.rs),
+matching the installed client. `process_responses_event` maps a `response.failed`
+error with an unrecognized code to `ApiError::Retryable`; `process_sse_with_treatment`
+delivers that saved error at clean EOF. A transport error instead takes precedence
+over the saved event. This is why partial-stream failures use registered code
+`UPSTREAM_STREAM_INTERRUPTED` and a clean HTTP end. Ordinary provider terminal
+failures retain their original reasons. Model-at-capacity and rate-limit failures
+after output use the interruption signal; they must not replay already delivered
+content inside the proxy.
+
+The installed Codex 0.154.0 was checked against an isolated local mock provider
+with temporary `CODEX_HOME` and fake credentials: one socket reset after an output
+delta produced one automatic reconnect and a successful `hello` completion. The
+offline server suite covers resets, idle timeouts, truncated events, early EOF,
+terminal events without upstream EOF, compressed UTF-8, and routing-slot cleanup.
+Real network outages can still exhaust the client's finite retry budget.

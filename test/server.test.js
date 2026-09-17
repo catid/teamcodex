@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import http from 'node:http';
 import test from 'node:test';
+import { gzipSync } from 'node:zlib';
 
 import { AccountManager } from '../src/account-manager.js';
 import { createProxyServer } from '../src/server.js';
@@ -199,7 +200,7 @@ test('silent upstream exhausts a bounded retry budget and returns 502', async t 
   assert.equal(manager.accounts[0].status, 'active');
 });
 
-test('a stalled partial stream is closed without replaying or disabling the account', async t => {
+test('a stalled partial stream ends with a retryable failure without replaying or disabling the account', async t => {
   let attempts = 0;
   const { url, manager } = await setup(t, (_req, res) => {
     attempts++;
@@ -207,7 +208,11 @@ test('a stalled partial stream is closed without replaying or disabling the acco
     res.write('data: {"type":"response.output_text.delta","delta":"hello"}\n\n');
   }, [key('first')], quickRetry);
   const response = await fetch(`${url}/responses`, { signal: AbortSignal.timeout(5000) });
-  await assert.rejects(response.text());
+  const body = await response.text();
+  assert.match(body, /"delta":"hello"/);
+  assert.match(body, /"type":"response.failed"/);
+  assert.match(body, /"code":"UPSTREAM_STREAM_INTERRUPTED"/);
+  assert.doesNotMatch(body, /"type":"response.completed"/);
   assert.equal(attempts, 1);
   assert.equal(manager.accounts[0].status, 'active');
 });
@@ -296,13 +301,13 @@ test('cumulative SSE usage, repeated events and late cached counts are counted o
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     const event = (type, input_tokens, output_tokens, cached_tokens) =>
       `data: ${JSON.stringify({ type, response: { usage: { input_tokens, output_tokens, input_tokens_details: { cached_tokens } } } })}\n\n`;
-    res.end(event('response.in_progress', 10, 2, 0) + event('response.incomplete', 10, 4, 6) +
+    res.end(event('response.in_progress', 10, 2, 0) + event('response.in_progress', 10, 4, 6) +
       event('response.completed', 10, 4, 8).repeat(2) + event('response.completed', -1, 'bad', 999));
   });
   await (await fetch(`${url}/responses`)).text();
   assert.equal(manager.stats.snapshot().totals.inputTokens, 10);
   assert.equal(manager.stats.snapshot().totals.outputTokens, 4);
-  assert.equal(manager.stats.snapshot().totals.cachedInputTokens, 10);
+  assert.equal(manager.stats.snapshot().totals.cachedInputTokens, 8);
   assert.equal(manager.accounts[0].usage.totalInputTokens, 10);
 });
 
@@ -588,7 +593,7 @@ test('a streamed model-at-capacity failure after the response preamble retries w
   assert.equal(manager.accounts[0].usage.totalInputTokens, 2);
 });
 
-test('a streamed model-at-capacity failure after real output closes the stream instead of replaying', async t => {
+test('a streamed model-at-capacity failure after real output becomes retryable without replaying', async t => {
   let attempts = 0;
   const { url, manager } = await setup(t, (_req, res) => {
     attempts++;
@@ -596,9 +601,122 @@ test('a streamed model-at-capacity failure after real output closes the stream i
     res.write('data: {"type":"response.output_text.delta","delta":"partial"}\n\n');
     res.end('data: {"type":"response.failed","response":{"error":{"code":"server_is_overloaded"}}}\n\n');
   }, [key('first')], quickOverload);
-  await assert.rejects(fetch(`${url}/responses`, { signal: AbortSignal.timeout(5000) }).then(response => response.text()));
+  const response = await fetch(`${url}/responses`, { signal: AbortSignal.timeout(5000) });
+  const body = await response.text();
+  assert.match(body, /"delta":"partial"/);
+  assert.match(body, /"code":"UPSTREAM_STREAM_INTERRUPTED"/);
+  assert.doesNotMatch(body, /server_is_overloaded|"type":"response.completed"/);
   assert.equal(attempts, 1);
   assert.equal(manager.accounts[0].status, 'active');
+});
+
+for (const failure of ['disconnect', 'eof']) {
+  test(`SSE comments and preamble followed by ${failure} retry before sending output`, async t => {
+    const seen = [];
+    const { url } = await setup(t, (req, res) => {
+      seen.push(req.headers.authorization);
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      if (seen.length === 1) {
+        res.write(': keepalive\n\ndata: {"type":"response.created","response":{"id":"failed-attempt"}}\n\n');
+        if (failure === 'eof') res.end();
+        else setTimeout(() => res.destroy(), 10);
+      } else res.end('data: {"type":"response.completed","response":{"id":"success","usage":{"input_tokens":3}}}\n\n');
+    }, undefined, quickRetry);
+    const response = await fetch(`${url}/responses`, { signal: AbortSignal.timeout(5000) });
+    const body = await response.text();
+    assert.match(body, /success/);
+    assert.doesNotMatch(body, /failed-attempt/);
+    assert.deepEqual(seen, ['Bearer first', 'Bearer second']);
+  });
+}
+
+test('EOF inside the first SSE event retries without publishing truncated JSON', async t => {
+  let attempts = 0;
+  const { url } = await setup(t, (_req, res) => {
+    attempts++;
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end(attempts === 1 ? 'data: {"type":"response.cre' : 'data: {"type":"response.completed","response":{"id":"success"}}\n\n');
+  }, undefined, quickRetry);
+  const body = await (await fetch(`${url}/responses`, { signal: AbortSignal.timeout(3000) })).text();
+  assert.match(body, /success/);
+  assert.equal(attempts, 2);
+});
+
+test('incomplete preambles exhaust the bounded retry budget and release routing slots', async t => {
+  const { url, manager } = await setup(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end('data: {"type":"response.created"}\n\n');
+  }, [key('first')], quickRetry);
+  const response = await fetch(`${url}/responses`, { signal: AbortSignal.timeout(3000) });
+  assert.equal(response.status, 502);
+  await response.text();
+  assert.equal(manager.stats.snapshot().totals.attempts, 3);
+  assert.equal(manager.accounts[0].status, 'active');
+  assert.equal(manager.getStatus().accounts[0].adaptive.inFlight, 0);
+});
+
+test('a socket reset after delivered output keeps HTTP framing valid and signals retry', async t => {
+  const { url, manager } = await setup(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write('data: {"type":"response.output_text.delta","delta":"partial"}\n\n');
+    setTimeout(() => res.destroy(), 20);
+  }, [key('first')], quickRetry);
+  const response = await fetch(`${url}/responses`, { signal: AbortSignal.timeout(3000) });
+  const body = await response.text();
+  assert.match(body, /"delta":"partial"/);
+  assert.match(body, /"code":"UPSTREAM_STREAM_INTERRUPTED"/);
+  assert.equal(manager.stats.snapshot().totals.attempts, 1);
+  assert.equal(manager.getStatus().accounts[0].adaptive.inFlight, 0);
+  assert.ok(manager.getStatus().accounts[0].adaptive.failureRate > 0);
+});
+
+for (const type of ['response.failed', 'response.incomplete']) {
+  test(`provider ${type} preserves its original terminal reason`, async t => {
+    const { url } = await setup(t, (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify({ type, response: { error: { code: 'invalid_prompt', message: 'invalid' }, incomplete_details: { reason: 'max_output_tokens' } } })}\n\n`);
+    }, [key('first')], quickRetry);
+    const body = await (await fetch(`${url}/responses`, { signal: AbortSignal.timeout(3000) })).text();
+    assert.match(body, /invalid_prompt/);
+    assert.doesNotMatch(body, /UPSTREAM_STREAM_INTERRUPTED/);
+  });
+}
+
+test('compressed SSE has valid downstream headers and preserves UTF-8 content', async t => {
+  const body = 'data: {"type":"response.output_text.delta","delta":"hello 世界"}\n\ndata: {"type":"response.completed","response":{"id":"done"}}\n\n';
+  const compressed = gzipSync(body);
+  const { url } = await setup(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream', 'content-encoding': 'gzip', 'content-length': compressed.length });
+    res.end(compressed);
+  });
+  const response = await fetch(`${url}/responses`, { signal: AbortSignal.timeout(3000) });
+  assert.equal(response.headers.get('content-encoding'), null);
+  assert.equal(response.headers.get('content-length'), null);
+  assert.equal(await response.text(), body);
+});
+
+test('response.completed finishes the client stream even if upstream never closes it', async t => {
+  const { url, manager } = await setup(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write('data: {"type":"response.completed","response":{"id":"finished","usage":{"input_tokens":7}}}\n\n');
+  }, [key('first')], quickRetry);
+  const response = await fetch(`${url}/responses`, { signal: AbortSignal.timeout(3000) });
+  assert.match(await response.text(), /finished/);
+  assert.equal(manager.stats.snapshot().totals.attempts, 1);
+  assert.equal(manager.stats.snapshot().totals.inputTokens, 7);
+});
+
+test('a truncated stream after output reports failure with valid HTTP framing', async t => {
+  const { url, manager } = await setup(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end('data: {"type":"response.output_text.delta","delta":"partial"}\n\ndata: {"type":"response.completed"');
+  }, [key('first')], quickRetry);
+  const response = await fetch(`${url}/responses`, { signal: AbortSignal.timeout(3000) });
+  const body = await response.text();
+  assert.match(body, /"delta":"partial"/);
+  assert.match(body, /"code":"UPSTREAM_STREAM_INTERRUPTED"/);
+  assert.doesNotMatch(body, /"type":"response.completed"/);
+  assert.equal(manager.stats.snapshot().totals.attempts, 1);
 });
 
 test('model-at-capacity retries stop at the configured budget and surface the upstream response', async t => {

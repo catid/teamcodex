@@ -29,7 +29,8 @@ export function retryPolicy(config) {
 }
 
 export function isTransientError(err) {
-  return ['AbortError', 'TimeoutError', 'TypeError'].includes(err?.name) ||
+  return err?.code === 'UPSTREAM_STREAM_INTERRUPTED' ||
+    ['AbortError', 'TimeoutError', 'TypeError'].includes(err?.name) ||
     /fetch failed|terminated|upstream_timeout/i.test(err?.message || '') ||
     /^(ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|UND_ERR_)/.test(err?.cause?.code || err?.code || '');
 }

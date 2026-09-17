@@ -73,6 +73,7 @@ native TypeError to avoid recursively calling a broken registry.
 | 3101 | `UPSTREAM_RESPONSE_TOO_LARGE` | Upstream response exceeds 32 MiB |
 | 3102 | `SSE_EVENT_TOO_LARGE` | SSE event buffer exceeds 1 MiB |
 | 3103 | `UPSTREAM_STREAM_EMPTY` | Upstream stream terminated before any events |
+| 3104 | `UPSTREAM_STREAM_INTERRUPTED` | Upstream stream ended before response.completed; retry the request |
 | 4001 | `USAGE_INVALID` | invalid_usage_response |
 | 4002 | `USAGE_HTTP_ERROR` | http_{status} |
 | 4003 | `USAGE_RESPONSE_TOO_LARGE` | response_too_large |
