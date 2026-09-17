@@ -26,9 +26,13 @@ const EMBEDDED_429_RE = /\b(?:429|too many requests|rate.?limit|exceeded retry l
 // instead of surfacing it.
 const OVERLOAD_ERROR_CODE = 'server_is_overloaded';
 const OVERLOAD_RE = /\b(?:server_is_overloaded|server is overloaded|model is at capacity)\b/i;
+// Provider-side transient failures arrive as a terminal response.failed SSE
+// event with no HTTP error status. Retry these before exposing them to Codex.
+const RETRYABLE_EVENT_ERROR_CODES = new Set(['server_error', 'internal_server_error', 'temporarily_unavailable']);
 // Stream events that precede any model output. They are held back until real
 // output arrives so an early failure can still be retried on another account.
 const PREAMBLE_EVENT_TYPES = new Set(['response.created', 'response.in_progress', 'response.queued']);
+const NON_OUTPUT_EVENT_TYPES = new Set(['keepalive', 'response.keepalive']);
 const TERMINAL_EVENT_TYPES = new Set(['response.completed', 'response.failed', 'response.incomplete']);
 
 export function createProxyServer(accountManager, config, hooks = {}) {
@@ -526,6 +530,32 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
           }
           return;
         }
+        if (streamResult.retryable) {
+          failed = true;
+          if (!streamResult.bytesSent && ctx.networkRetries < upstreams.retry.maxRetries) {
+            clearTimeout(timeout);
+            await retryDelay(ctx.networkRetries++, controller.signal);
+            if (res.destroyed) return;
+            ctx.excluded.add(account);
+            if (!accountManager.routing) accountManager.rotateAfter(account);
+            lease.observe(failed, headerLatency);
+            lease.release();
+            return forwardRequest(req, res, body, accountManager, upstreams, retryCount, hooks, reqId, ctx, logDir);
+          }
+          // Preserve the provider's terminal event after the bounded retry
+          // budget, while keeping a partially delivered stream well-framed.
+          if (!streamResult.bytesSent && streamResult.replay && !res.headersSent) {
+            ctx.status = upstreamRes.status;
+            res.writeHead(upstreamRes.status, responseHeaders);
+            const replay = streamResult.terminal ? streamResult.replay
+              : `${streamResult.replay}data: ${JSON.stringify({ type: 'response.failed', response: {
+                status: 'failed',
+                error: { code: 'UPSTREAM_STREAM_INTERRUPTED', message: errorMessage('UPSTREAM_STREAM_INTERRUPTED') },
+              } })}\n\n`;
+            res.end(replay);
+          }
+          return;
+        }
         ctx.status = upstreamRes.status;
       } else {
         const buf = bufferedBody ?? await readResponseBody(upstreamRes.body, touch);
@@ -663,7 +693,7 @@ function isOverloadedBody(buffer) {
  * @param {string[] | null} streamLog
  * @param {() => void} touch
  * @param {AbortSignal} signal
- * @returns {Promise<{embedded429: boolean, overloaded: boolean, bytesSent: boolean, replay?: string}>}
+ * @returns {Promise<{embedded429: boolean, overloaded: boolean, retryable?: boolean, terminal?: boolean, bytesSent: boolean, replay?: string}>}
  */
 async function streamResponse(webStream, res, status, headers, accountIndex, accountManager, streamLog, touch, signal) {
   const reader = webStream.getReader();
@@ -675,6 +705,7 @@ async function streamResponse(webStream, res, status, headers, accountIndex, acc
   let pending = '';
   let sawResponseEvent = false;
   let shouldEnd = true;
+  let skipLF = false;
   const onClose = () => { reader.cancel().catch(() => {}); };
   res.once('close', onClose);
 
@@ -693,8 +724,8 @@ async function streamResponse(webStream, res, status, headers, accountIndex, acc
       if (streamLog) streamLog.push(text);
 
       // Parse SSE events for usage and embedded rate-limit failures
-      sseBuffer += text;
-      const events = sseBuffer.split(/\r?\n\r?\n/);
+      sseBuffer += normalizeSSEText(text);
+      const events = sseBuffer.split('\n\n');
       sseBuffer = events.pop(); // keep incomplete event
       if (sseBuffer.length > 1024 * 1024 || events.some(event => event.length > 1024 * 1024)) {
         throw createError('SSE_EVENT_TOO_LARGE');
@@ -712,8 +743,18 @@ async function streamResponse(webStream, res, status, headers, accountIndex, acc
     }
 
     const trailing = decoder.decode();
-    if (trailing) {
-      sseBuffer += trailing;
+    if (trailing) sseBuffer += normalizeSSEText(trailing);
+    // A delimiter can be completed by the final CR at EOF. Process those
+    // events before deciding that the stream ended without a terminal event.
+    const finalEvents = sseBuffer.split('\n\n');
+    sseBuffer = finalEvents.pop();
+    for (const event of finalEvents) {
+      const failure = await handleEvent(event, `${event}\n\n`);
+      if (failure) return failure;
+      if (res.destroyed) {
+        shouldEnd = false;
+        return { ...NO_FAILURE, bytesSent };
+      }
     }
 
     if (res.destroyed) return { ...NO_FAILURE, bytesSent };
@@ -742,29 +783,58 @@ async function streamResponse(webStream, res, status, headers, accountIndex, acc
   /**
    * Inspect one event, then either hold it (preamble), forward it, or report a
    * failure that the caller may retry when nothing has been sent yet.
-   * @returns {Promise<{embedded429: boolean, overloaded: boolean, bytesSent: boolean, replay?: string} | null>}
+   * @returns {Promise<{embedded429: boolean, overloaded: boolean, retryable?: boolean, terminal?: boolean, bytesSent: boolean, replay?: string} | null>}
    */
   async function handleEvent(event, eventText) {
     const eventResult = inspectSSEEvent(event, accountIndex, accountManager, streamState);
+    const outputEventText = eventResult.normalizedEventText ?? eventText;
     if (eventResult.eventType?.startsWith('response.')) sawResponseEvent = true;
     if (eventResult.embedded429 || eventResult.overloaded) {
       shouldEnd = false;
       if (bytesSent) {
         endInterruptedStream(res);
       }
-      return { embedded429: eventResult.embedded429, overloaded: eventResult.overloaded, bytesSent, replay: pending + eventText };
+      return { embedded429: eventResult.embedded429, overloaded: eventResult.overloaded, bytesSent, replay: pending + outputEventText };
+    }
+    if (eventResult.retryable) {
+      shouldEnd = false;
+      if (bytesSent) endInterruptedStream(res);
+      return { ...NO_FAILURE, retryable: true, terminal: eventResult.terminal || eventResult.eventType === 'response.failed', bytesSent, replay: pending + outputEventText };
     }
     const comment = event.split('\n').every(line => !line.trim() || line.startsWith(':'));
-    if (!bytesSent && comment) return null;
+    if (!bytesSent && (comment || NON_OUTPUT_EVENT_TYPES.has(eventResult.eventType))) return null;
     if (PREAMBLE_EVENT_TYPES.has(eventResult.eventType)) {
       pending += eventText;
       if (pending.length > 32 * 1024 * 1024) throw createError('UPSTREAM_RESPONSE_TOO_LARGE');
       return null;
     }
-    bytesSent = await writeStreamChunk(res, status, headers, pending + eventText, bytesSent);
+    bytesSent = await writeStreamChunk(res, status, headers, pending + outputEventText, bytesSent);
     pending = '';
-    if (TERMINAL_EVENT_TYPES.has(eventResult.eventType)) return { ...NO_FAILURE, bytesSent };
+    if (eventResult.terminal || TERMINAL_EVENT_TYPES.has(eventResult.eventType)) return { ...NO_FAILURE, bytesSent };
     return null;
+  }
+
+  /**
+   * Normalize SSE line endings while retaining enough state to join a CRLF
+   * split across two upstream chunks.
+   * @param {string} text
+   * @returns {string}
+   */
+  function normalizeSSEText(text) {
+    let normalized = '';
+    for (const character of text) {
+      if (skipLF) {
+        skipLF = false;
+        if (character === '\n') continue;
+      }
+      if (character === '\r') {
+        normalized += '\n';
+        skipLF = true;
+      } else {
+        normalized += character;
+      }
+    }
+    return normalized;
   }
 
   async function writeStreamChunk(res, status, headers, chunk, hasWritten) {
@@ -801,7 +871,7 @@ async function streamResponse(webStream, res, status, headers, accountIndex, acc
 
 const NO_FAILURE = Object.freeze({ embedded429: false, overloaded: false });
 
-/** @returns {{embedded429: boolean, overloaded: boolean, eventType?: string}} */
+/** @returns {{embedded429: boolean, overloaded: boolean, retryable?: boolean, terminal?: boolean, normalizedEventText?: string, eventType?: string}} */
 function inspectSSEEvent(event, accountIndex, accountManager, state) {
   const dataLines = event.split('\n')
     .filter(l => l.startsWith('data:'))
@@ -812,12 +882,56 @@ function inspectSSEEvent(event, accountIndex, accountManager, state) {
     const dataText = dataLines.join('\n');
     if (dataText === '[DONE]') return NO_FAILURE;
     const data = JSON.parse(dataText);
-    const eventType = typeof data?.type === 'string' ? data.type : undefined;
-    return { ...inspectResponsePayload(data, accountIndex, accountManager, state), eventType };
+    const eventName = event.split('\n')
+      .find(line => line.startsWith('event:'))
+      ?.slice(6).trim();
+    const eventType = typeof data?.type === 'string' ? data.type : eventName;
+    const result = inspectResponsePayload(data, accountIndex, accountManager, state);
+    const eventError = eventType === 'response.failed' || eventType === 'error'
+      ? extractSSEError(data)
+      : null;
+    const normalizedEventText = eventType === 'error' && eventError
+      ? formatResponseFailedEvent(eventError)
+      : undefined;
+    return {
+      ...result,
+      ...(eventError && RETRYABLE_EVENT_ERROR_CODES.has(eventError.code)
+        ? { retryable: true }
+        : {}),
+      ...(normalizedEventText ? { normalizedEventText, terminal: true } : {}),
+      eventType,
+    };
   } catch {
     // not valid JSON, skip
     return NO_FAILURE;
   }
+}
+
+/** @param {unknown} data @returns {{code: string, message: string} | null} */
+function extractSSEError(data) {
+  if (!data || typeof data !== 'object') return null;
+  const source = data.response?.error ?? data.error ?? data;
+  const value = source && typeof source === 'object' ? source : {};
+  const code = typeof value.code === 'string' && value.code
+    ? value.code
+    : typeof value.type === 'string' && value.type && value.type !== data.type
+      ? value.type
+      : typeof data.code === 'string' && data.code
+        ? data.code
+        : 'upstream_error';
+  const message = typeof value.message === 'string' && value.message
+    ? value.message
+    : typeof value.detail === 'string' && value.detail
+      ? value.detail
+      : typeof data.message === 'string' && data.message
+        ? data.message
+        : 'The upstream provider returned an error';
+  return { code, message };
+}
+
+/** @param {{code: string, message: string}} error @returns {string} */
+function formatResponseFailedEvent(error) {
+  return `data: ${JSON.stringify({ type: 'response.failed', response: { status: 'failed', error } })}\n\n`;
 }
 
 function inspectResponseBody(buffer, accountIndex, accountManager) {

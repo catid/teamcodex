@@ -48,12 +48,17 @@ The two paths have different config locations, documented in the README.
   on that error, so never surface it early. Hold stream preamble events until output
   follows them. Once output is sent, append a standard `response.failed` event and
   finish the SSE body instead of replaying the request or destroying the HTTP
-  connection. Preserve client-disconnect cancellation, idle deadlines, and
-  incremental SSE parsing (`test/server.test.js`, `test/retry.test.js`).
+  connection. Treat provider `response.failed` events with transient
+  `server_error`, `internal_server_error`, or `temporarily_unavailable` codes as
+  retryable before output; after output, use the same clean failure signal.
+  Preserve client-disconnect cancellation, idle deadlines, and
+  incremental SSE parsing across LF, CRLF, and CR line endings. Normalize
+  top-level provider `error` events to `response.failed` before forwarding so
+  Codex receives a terminal event (`test/server.test.js`, `test/retry.test.js`).
   Stop reading at terminal Responses events; provider EOF is not required after
   completion. EOF before a terminal event is a failure, including clean EOF after
-  a preamble. Discard incomplete trailing events. Keepalive comments before output
-  must not commit client headers and prevent retries.
+  a preamble. Discard incomplete trailing events. Keepalive comments and JSON
+  keepalive events before output must not commit client headers or prevent retries.
 - **Usage-reset persistence:** reserve a redemption on disk before its POST. Retain
   its request ID when the outcome is uncertain, reuse that ID on retry, and preserve
   pending IDs and cooldowns through installation reset. Verify usage afterward

@@ -610,6 +610,37 @@ test('a streamed model-at-capacity failure after real output becomes retryable w
   assert.equal(manager.accounts[0].status, 'active');
 });
 
+test('a transient provider server_error before output retries another account', async t => {
+  let attempts = 0;
+  const seen = [];
+  const { url } = await setup(t, (req, res) => {
+    attempts++;
+    seen.push(req.headers.authorization);
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    if (attempts === 1) {
+      res.end('data: {"type":"response.created","response":{"id":"failed-attempt"}}\n\ndata: {"type":"keepalive"}\n\ndata: {"type":"error","code":"server_error","message":"temporary"}\n\ndata: {"type":"response.failed","response":{"status":"failed","error":{"code":"server_error","message":"temporary"}}}\n\n');
+    } else {
+      res.end('data: {"type":"response.completed","response":{"id":"success"}}\n\n');
+    }
+  }, undefined, quickRetry);
+  const body = await (await fetch(`${url}/responses`, { signal: AbortSignal.timeout(3000) })).text();
+  assert.match(body, /success/);
+  assert.doesNotMatch(body, /temporary/);
+  assert.equal(attempts, 2);
+  assert.deepEqual(seen, ['Bearer first', 'Bearer second']);
+});
+
+test('a transient provider server_error after output ends with a retryable event', async t => {
+  const { url } = await setup(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end('data: {"type":"response.output_text.delta","delta":"partial"}\n\ndata: {"type":"response.failed","response":{"status":"failed","error":{"code":"server_error","message":"temporary"}}}\n\n');
+  }, [key('first')], quickRetry);
+  const body = await (await fetch(`${url}/responses`, { signal: AbortSignal.timeout(3000) })).text();
+  assert.match(body, /partial/);
+  assert.match(body, /UPSTREAM_STREAM_INTERRUPTED/);
+  assert.doesNotMatch(body, /temporary/);
+});
+
 for (const failure of ['disconnect', 'eof']) {
   test(`SSE comments and preamble followed by ${failure} retry before sending output`, async t => {
     const seen = [];
