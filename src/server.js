@@ -281,6 +281,11 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
       headers[key] = value;
     }
 
+    // Keep the upstream response bytes uncompressed. Node's fetch transparently
+    // decompresses gzip/deflate bodies, and requesting identity avoids truncated
+    // compressed streams surfacing as client-side SSE decode failures.
+    headers['accept-encoding'] = 'identity';
+
     // Always replace the client's credentials with the active account's. Never
     // let the client's own chatgpt-account-id leak through with our token — if
     // we don't have an account id, drop it so the backend uses the token's own.
@@ -604,8 +609,10 @@ async function forwardRequest(req, res, body, accountManager, upstreams, retryCo
  */
 function endInterruptedStream(res) {
   if (res.destroyed || res.writableEnded) return;
-  const event = { type: 'response.failed', response: { status: 'failed',
-    ...errorResponse('UPSTREAM_STREAM_INTERRUPTED') } };
+  const event = { type: 'response.failed', response: { status: 'failed', error: {
+    code: 'UPSTREAM_STREAM_INTERRUPTED',
+    message: errorMessage('UPSTREAM_STREAM_INTERRUPTED'),
+  } } };
   res.end(`data: ${JSON.stringify(event)}\n\n`);
 }
 

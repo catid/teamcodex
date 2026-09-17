@@ -685,7 +685,9 @@ for (const type of ['response.failed', 'response.incomplete']) {
 test('compressed SSE has valid downstream headers and preserves UTF-8 content', async t => {
   const body = 'data: {"type":"response.output_text.delta","delta":"hello 世界"}\n\ndata: {"type":"response.completed","response":{"id":"done"}}\n\n';
   const compressed = gzipSync(body);
-  const { url } = await setup(t, (_req, res) => {
+  let acceptEncoding;
+  const { url } = await setup(t, (req, res) => {
+    acceptEncoding = req.headers['accept-encoding'];
     res.writeHead(200, { 'content-type': 'text/event-stream', 'content-encoding': 'gzip', 'content-length': compressed.length });
     res.end(compressed);
   });
@@ -693,6 +695,7 @@ test('compressed SSE has valid downstream headers and preserves UTF-8 content', 
   assert.equal(response.headers.get('content-encoding'), null);
   assert.equal(response.headers.get('content-length'), null);
   assert.equal(await response.text(), body);
+  assert.equal(acceptEncoding, 'identity');
 });
 
 test('response.completed finishes the client stream even if upstream never closes it', async t => {
