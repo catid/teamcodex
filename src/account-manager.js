@@ -131,7 +131,8 @@ export class AccountManager {
       return chosen;
     }
     const current = this.accounts[this.currentIndex];
-    if (current?.type === 'apikey') {
+    const currentAvailable = this._isAvailable(current);
+    if (current?.type === 'apikey' || !currentAvailable) {
       const recoveredChatGPT = this._selectAvailableChatGPT(excluded);
       if (recoveredChatGPT) {
         this.currentIndex = recoveredChatGPT.index;
@@ -139,7 +140,7 @@ export class AccountManager {
         return recoveredChatGPT;
       }
     }
-    if (this._isAvailable(current)) {
+    if (currentAvailable) {
       return current;
     }
     return this._selectNext();

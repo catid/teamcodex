@@ -119,6 +119,16 @@ test('returns to a recovered ChatGPT account from an API-key fallback', () => {
   assert.equal(manager.getActiveAccount(), maxPlan);
 });
 
+test('rotation prefers available ChatGPT capacity before an earlier API fallback', () => {
+  const manager = new AccountManager([
+    { name: 'near-limit', type: 'chatgpt', accessToken: 'near-limit' },
+    key('api'),
+    { name: 'available', type: 'chatgpt', accessToken: 'available' },
+  ], 0.98, undefined, { randomIndex: size => size - 1 });
+  manager.updateQuota(0, { 'x-codex-primary-used-percent': '99' });
+  assert.equal(manager.getActiveAccount().name, 'available');
+});
+
 test('API fallback waits for subscription cooldowns and skips disabled or rejected accounts', t => {
   t.mock.timers.enable({ apis: ['Date'], now: 1800000000000 });
   const manager = new AccountManager([
