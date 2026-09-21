@@ -58,6 +58,26 @@ for (const failure of ['http', 'connection']) {
   });
 }
 
+test('ChatGPT preference preserves API fallback on retries and returns on the next request', async t => {
+  const seen = [];
+  let recovered = false;
+  const { url, manager } = await setup(t, (req, res) => {
+    seen.push(req.headers.authorization);
+    res.writeHead(!recovered && req.headers.authorization === 'Bearer oauth' ? 503 : 200);
+    res.end('ok');
+  }, [{ name: 'subscription', type: 'chatgpt', accessToken: 'oauth' }, key('api')]);
+  const first = await fetch(`${url}/responses`);
+  assert.equal(first.status, 200);
+  await first.text();
+  assert.deepEqual(seen, ['Bearer oauth', 'Bearer api']);
+  assert.equal(manager.getStatus().currentAccount, 'api');
+  recovered = true;
+  const next = await fetch(`${url}/responses`);
+  assert.equal(next.status, 200);
+  await next.text();
+  assert.deepEqual(seen, ['Bearer oauth', 'Bearer api', 'Bearer oauth']);
+});
+
 test('401 rejection rotates credentials and API requests use the API upstream', async t => {
   const seen = [];
   const { url, manager } = await setup(t, (req, res) => {

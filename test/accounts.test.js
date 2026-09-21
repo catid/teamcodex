@@ -119,6 +119,30 @@ test('returns to a recovered ChatGPT account from an API-key fallback', () => {
   assert.equal(manager.getActiveAccount(), maxPlan);
 });
 
+test('API fallback waits for subscription cooldowns and skips disabled or rejected accounts', t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1800000000000 });
+  const manager = new AccountManager([
+    { name: 'disabled', type: 'chatgpt', accessToken: 'disabled', enabled: false },
+    { name: 'rejected', type: 'chatgpt', accessToken: 'rejected' },
+    { name: 'cooling', type: 'chatgpt', accessToken: 'cooling' },
+    key('api'),
+  ], 0.98, undefined, { randomIndex: size => size - 1 });
+  manager.currentIndex = 3;
+  manager.markAuthFailed(1);
+  manager.markRateLimited(2, 60);
+  manager.updateQuota(2, { 'x-codex-primary-used-percent': '100', 'x-codex-primary-reset-after-seconds': '60' });
+  assert.equal(manager.getActiveAccount().name, 'api');
+  t.mock.timers.tick(60001);
+  assert.equal(manager.getActiveAccount().name, 'cooling');
+});
+
+test('explicit API-first failover retains its configured preference', () => {
+  const manager = new AccountManager([
+    key('api'), { name: 'subscription', type: 'chatgpt', accessToken: 'oauth' },
+  ], 0.98, { defaultPool: 'main', pools: { main: { accounts: ['api', 'subscription'], strategy: 'failover' } } });
+  assert.equal(manager.getActiveAccount().name, 'api');
+});
+
 test('hot reload adds accounts without IDs and updates the correct API key', async () => {
   const config = { accounts: [key('first')] };
   const manager = new AccountManager(config.accounts);

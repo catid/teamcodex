@@ -132,7 +132,7 @@ export class AccountManager {
     }
     const current = this.accounts[this.currentIndex];
     if (current?.type === 'apikey') {
-      const recoveredChatGPT = this._selectAvailableChatGPT();
+      const recoveredChatGPT = this._selectAvailableChatGPT(excluded);
       if (recoveredChatGPT) {
         this.currentIndex = recoveredChatGPT.index;
         console.log(`[TeamCodex] Switched back to ChatGPT account "${recoveredChatGPT.name}"`);
@@ -168,13 +168,17 @@ export class AccountManager {
     return this._isUsable(account) && !this._isNearQuota(account);
   }
 
-  _selectAvailableChatGPT() {
+  /** Prefer subscription capacity without undoing a retry's account rotation.
+   * @param {Set<ReturnType<AccountManager['_buildAccount']>>} excluded
+   * @returns {ReturnType<AccountManager['_buildAccount']> | null}
+   */
+  _selectAvailableChatGPT(excluded) {
     const startIndex = this.rotationOrder.indexOf(this.currentIndex);
 
     for (let i = 1; i <= this.accounts.length; i++) {
       const idx = this.rotationOrder[(startIndex + i) % this.accounts.length];
       const account = this.accounts[idx];
-      if (account.type === 'chatgpt' && this._isAvailable(account)) return account;
+      if (account.type === 'chatgpt' && !excluded.has(account) && this._isAvailable(account)) return account;
     }
 
     return null;

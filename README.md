@@ -91,7 +91,7 @@ teamcodex status
 
 Sign into a different ChatGPT account for each login. If the browser has kept the previous account signed in, switch accounts there before authorizing. Re-authorizing the same account updates it. New enabled accounts participate in unpooled rotation immediately; no service restart is needed. With explicit pools, add the account name to the intended pool and reload before it can receive traffic.
 
-Each proxy startup creates an independently shuffled rotation order and starts with its first account. The proxy follows that order when quota limits, rejected credentials, or transient failures require another account. Added accounts enter a random position; config and display order stay unchanged. This spreads starting accounts across independent machines without coordination. A healthy active account continues serving until rotation is needed, preserving connection reuse. `teamcodex status` includes the current `rotationOrder`.
+Each proxy startup creates an independently shuffled rotation order and starts with its first account. The proxy follows that order when quota limits, rejected credentials, or transient failures require another account. Added accounts enter a random position; config and display order stay unchanged. This spreads starting accounts across independent machines without coordination. A healthy active account continues serving until rotation is needed, preserving connection reuse, except that an API-key account yields to available ChatGPT capacity as described below. `teamcodex status` includes the current `rotationOrder`.
 
 ### Device authorization
 
@@ -129,6 +129,8 @@ teamcodex login --api --name api-fallback
 ```
 
 API key support is experimental and uses your OpenAI platform account. The proxy rewrites `/backend-api/codex/...` to `/v1/...` for API accounts, including `/responses` and `/responses/compact`. Model access and request compatibility depend on your API account. Use ChatGPT accounts for subscription access.
+
+Without explicit routing pools, an active API-key account automatically yields on the next request to an enabled, healthy ChatGPT account below its switch threshold. This includes capacity restored by usage polling, quota expiry, or a new login. Recovery follows the shuffled rotation order and preserves fallback for accounts that already failed during the same request. Explicit pools retain their configured selection strategy.
 
 ## Automatic earned usage resets
 
