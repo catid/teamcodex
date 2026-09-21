@@ -131,6 +131,14 @@ export class AccountManager {
       return chosen;
     }
     const current = this.accounts[this.currentIndex];
+    if (current?.type === 'apikey') {
+      const recoveredChatGPT = this._selectAvailableChatGPT();
+      if (recoveredChatGPT) {
+        this.currentIndex = recoveredChatGPT.index;
+        console.log(`[TeamCodex] Switched back to ChatGPT account "${recoveredChatGPT.name}"`);
+        return recoveredChatGPT;
+      }
+    }
     if (this._isAvailable(current)) {
       return current;
     }
@@ -158,6 +166,18 @@ export class AccountManager {
 
   _isAvailable(account) {
     return this._isUsable(account) && !this._isNearQuota(account);
+  }
+
+  _selectAvailableChatGPT() {
+    const startIndex = this.rotationOrder.indexOf(this.currentIndex);
+
+    for (let i = 1; i <= this.accounts.length; i++) {
+      const idx = this.rotationOrder[(startIndex + i) % this.accounts.length];
+      const account = this.accounts[idx];
+      if (account.type === 'chatgpt' && this._isAvailable(account)) return account;
+    }
+
+    return null;
   }
 
   /**

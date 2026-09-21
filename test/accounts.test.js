@@ -103,6 +103,22 @@ test('transient retry rotation and near-quota ties follow the shuffled schedule'
   assert.equal(manager.rotateAfter(manager.accounts[1]).name, 'c');
 });
 
+test('returns to a recovered ChatGPT account from an API-key fallback', () => {
+  const manager = new AccountManager([
+    { name: 'max-plan', type: 'chatgpt', accessToken: 'oauth-token', planType: 'pro' },
+    key('api-fallback'),
+  ], 0.98, undefined, { randomIndex: () => 0 });
+  const maxPlan = manager.accounts[0];
+  const apiFallback = manager.accounts[1];
+  manager.currentIndex = apiFallback.index;
+  maxPlan.quota.primary = 0.99;
+
+  assert.equal(manager.getActiveAccount(), apiFallback);
+
+  maxPlan.quota.primary = 0.25;
+  assert.equal(manager.getActiveAccount(), maxPlan);
+});
+
 test('hot reload adds accounts without IDs and updates the correct API key', async () => {
   const config = { accounts: [key('first')] };
   const manager = new AccountManager(config.accounts);
