@@ -73,6 +73,30 @@ test('JSON keepalive and top-level transient error before output retry as one at
   assert.ok(manager.accounts.every(account => account.status === 'active'));
 });
 
+test('metadata before a provider overload remains retryable preamble', async t => {
+  let attempts = 0;
+  const { url } = await proxyFor(t, (_req, res) => {
+    attempts++;
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    if (attempts === 1) {
+      res.end([
+        'event: response.created\ndata: {"type":"response.created","response":{"id":"failed"}}\n\n',
+        'event: response.in_progress\ndata: {"type":"response.in_progress","response":{"id":"failed"}}\n\n',
+        'event: response.metadata\ndata: {"type":"response.metadata","response":{"id":"failed"}}\n\n',
+        'event: error\ndata: {"type":"error","error":{"code":"server_is_overloaded","message":"busy"}}\n\n',
+      ].join(''));
+      return;
+    }
+    res.end('event: response.completed\ndata: {"type":"response.completed","response":{"id":"ok"}}\n\n');
+  });
+  const response = await fetch(`${url}/responses`, { signal: AbortSignal.timeout(3000) });
+  assert.equal(response.status, 200);
+  const text = await response.text();
+  assert.match(text, /"id":"ok"/);
+  assert.doesNotMatch(text, /failed|server_is_overloaded|UPSTREAM_STREAM_INTERRUPTED/);
+  assert.equal(attempts, 2);
+});
+
 test('an exhausted top-level transient error still ends with a Responses failure event', async t => {
   const { url } = await proxyFor(t, (_req, res) => {
     res.writeHead(200, { 'content-type': 'text/event-stream' });

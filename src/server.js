@@ -31,7 +31,7 @@ const OVERLOAD_RE = /\b(?:server_is_overloaded|server is overloaded|model is at 
 const RETRYABLE_EVENT_ERROR_CODES = new Set(['server_error', 'internal_server_error', 'temporarily_unavailable']);
 // Stream events that precede any model output. They are held back until real
 // output arrives so an early failure can still be retried on another account.
-const PREAMBLE_EVENT_TYPES = new Set(['response.created', 'response.in_progress', 'response.queued']);
+const PREAMBLE_EVENT_TYPES = new Set(['response.created', 'response.in_progress', 'response.queued', 'response.metadata']);
 const NON_OUTPUT_EVENT_TYPES = new Set(['keepalive', 'response.keepalive']);
 const TERMINAL_EVENT_TYPES = new Set(['response.completed', 'response.failed', 'response.incomplete']);
 
