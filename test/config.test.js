@@ -20,7 +20,9 @@ test('config transactions, recovery, and permissions', async t => {
     else process.env.TEAMCODEX_CONFIG = original;
     await rm(dir, { recursive: true, force: true });
   });
-  await saveConfig(createDefaultConfig());
+  const defaults = createDefaultConfig();
+  assert.deepEqual(defaults.retry, { maxRetries: 2, headerTimeoutSeconds: 120, idleTimeoutSeconds: 600 });
+  await saveConfig(defaults);
 
   await t.test('concurrent processes preserve every update', async () => {
     const module = pathToFileURL(resolve('src/config.js')).href;

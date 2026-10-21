@@ -132,6 +132,16 @@ test('SSE event metadata marks a top-level error as terminal', async t => {
   assert.match(text, /"code":"invalid_prompt"/);
 });
 
+test('a complete terminal SSE event is accepted when the provider closes without a blank line', async t => {
+  const { url } = await proxyFor(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end('data: {"type":"response.completed","response":{"id":"eof-terminal"}}');
+  });
+  const response = await fetch(`${url}/responses`, { signal: AbortSignal.timeout(3000) });
+  assert.equal(response.status, 200);
+  assert.match(await response.text(), /"id":"eof-terminal"/);
+});
+
 test('SSE CR-only event delimiters are parsed as completed responses', async t => {
   const { url } = await proxyFor(t, (_req, res) => {
     res.writeHead(200, { 'content-type': 'text/event-stream' });

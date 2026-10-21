@@ -757,6 +757,19 @@ async function streamResponse(webStream, res, status, headers, accountIndex, acc
       }
     }
 
+    // Providers occasionally close immediately after a complete terminal
+    // event, without writing the optional blank line that normally delimits
+    // an SSE event. Accept that event while continuing to reject truncated
+    // JSON and non-terminal EOFs.
+    if (sseBuffer.trim()) {
+      const finalEventResult = inspectSSEEvent(sseBuffer, accountIndex, accountManager, streamState);
+      if (finalEventResult.terminal || TERMINAL_EVENT_TYPES.has(finalEventResult.eventType)) {
+        const failure = await handleEvent(sseBuffer, `${sseBuffer}\n\n`, finalEventResult);
+        if (failure) return failure;
+        sseBuffer = '';
+      }
+    }
+
     if (res.destroyed) return { ...NO_FAILURE, bytesSent };
     // A clean TCP EOF is not a completed Responses request. Do not publish the
     // buffered preamble or an incomplete JSON event from a truncated attempt.
@@ -785,8 +798,7 @@ async function streamResponse(webStream, res, status, headers, accountIndex, acc
    * failure that the caller may retry when nothing has been sent yet.
    * @returns {Promise<{embedded429: boolean, overloaded: boolean, retryable?: boolean, terminal?: boolean, bytesSent: boolean, replay?: string} | null>}
    */
-  async function handleEvent(event, eventText) {
-    const eventResult = inspectSSEEvent(event, accountIndex, accountManager, streamState);
+  async function handleEvent(event, eventText, eventResult = inspectSSEEvent(event, accountIndex, accountManager, streamState)) {
     const outputEventText = eventResult.normalizedEventText ?? eventText;
     if (eventResult.eventType?.startsWith('response.')) sawResponseEvent = true;
     if (eventResult.embedded429 || eventResult.overloaded) {

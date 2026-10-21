@@ -13,6 +13,8 @@ test('model-at-capacity backoff doubles to a cap and honours Retry-After', () =>
 
 test('retry policy retries model-at-capacity responses without a time limit by default', () => {
   const policy = retryPolicy({});
+  assert.equal(policy.headerTimeoutSeconds, 120);
+  assert.equal(policy.idleTimeoutSeconds, 600);
   assert.equal(policy.overloadBackoffSeconds, 1);
   assert.equal(policy.overloadRetrySeconds, 0);
   assert.equal(retryPolicy({ retry: { overloadRetrySeconds: 600 } }).overloadRetrySeconds, 600);

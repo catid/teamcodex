@@ -27,7 +27,7 @@ export function createDefaultConfig() {
     apiUpstream: 'https://api.openai.com',
     switchThreshold: 0.98,
     autoReset: { enabled: true, threshold: 0.98, pollIntervalSeconds: 300 },
-    retry: { maxRetries: 2, headerTimeoutSeconds: 60, idleTimeoutSeconds: 120 },
+    retry: { maxRetries: 2, headerTimeoutSeconds: 120, idleTimeoutSeconds: 600 },
     accounts: [],
   };
 }

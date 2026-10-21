@@ -22,7 +22,7 @@ const OVERLOAD_MAX_RETRY_AFTER_SECONDS = 60;
  */
 export function retryPolicy(config) {
   return {
-    maxRetries: 2, headerTimeoutSeconds: 60, idleTimeoutSeconds: 120,
+    maxRetries: 2, headerTimeoutSeconds: 120, idleTimeoutSeconds: 600,
     overloadBackoffSeconds: 1, overloadRetrySeconds: 0,
     ...config.retry,
   };
