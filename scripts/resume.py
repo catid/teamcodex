@@ -12,6 +12,8 @@ from pathlib import Path
 VALUE_FLAGS = {'-c', '--config', '-m', '--model', '-p', '--profile', '-s', '--sandbox',
                '-C', '--cd', '-a', '--ask-for-approval', '-i', '--image', '--add-dir',
                '--enable', '--disable', '--remote', '--remote-auth-token-env'}
+SESSION_LIST_CALL_TIMEOUT_SECONDS = 60
+SESSION_LIST_DEADLINE_SECONDS = 90
 
 
 def session_list_command():
@@ -71,7 +73,7 @@ class ThreadReader:
         self.selector.register(self.process.stdout, selectors.EVENT_READ)
         self.buffer = b''
         self.next_id = 0
-        self.deadline = time.monotonic() + 30
+        self.deadline = time.monotonic() + SESSION_LIST_DEADLINE_SECONDS
         return self
 
     def __exit__(self, *_):
@@ -92,7 +94,7 @@ class ThreadReader:
     def call(self, method, params):
         self.next_id += 1
         self.send({'id': self.next_id, 'method': method, 'params': params})
-        deadline = min(self.deadline, time.monotonic() + 20)
+        deadline = min(self.deadline, time.monotonic() + SESSION_LIST_CALL_TIMEOUT_SECONDS)
         while time.monotonic() < deadline:
             if b'\n' not in self.buffer:
                 if not self.selector.select(max(0, deadline - time.monotonic())):

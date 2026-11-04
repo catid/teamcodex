@@ -13,6 +13,11 @@ class ResumeTests(unittest.TestCase):
         self.assertEqual(resume.session_list_command(),
                          ['codex', 'app-server', '--stdio', '-c', 'mcp_servers={}'])
 
+    def test_session_listing_allows_slow_codex_startup(self):
+        self.assertGreater(resume.SESSION_LIST_CALL_TIMEOUT_SECONDS, 20)
+        self.assertGreater(resume.SESSION_LIST_DEADLINE_SECONDS,
+                           resume.SESSION_LIST_CALL_TIMEOUT_SECONDS)
+
     def test_options_and_literal_values(self):
         args = ['-m', 'gpt-6-astra', 'resume', '--last', '-C', '/tmp/project', '-c', 'title="--all"']
         options = resume.selection_options(args)
