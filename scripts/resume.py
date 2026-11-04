@@ -14,6 +14,11 @@ VALUE_FLAGS = {'-c', '--config', '-m', '--model', '-p', '--profile', '-s', '--sa
                '--enable', '--disable', '--remote', '--remote-auth-token-env'}
 
 
+def session_list_command():
+    """Return the Codex command used to list sessions without starting MCP servers."""
+    return ['codex', 'app-server', '--stdio', '-c', 'mcp_servers={}']
+
+
 def selection_options(args):
     """Leave explicit IDs, remote servers, help, and unrelated commands to Codex."""
     operation = None
@@ -59,7 +64,7 @@ def selection_options(args):
 class ThreadReader:
     """Bounded JSON-RPC reads using Codex's public API, without editing its DB."""
     def __enter__(self):
-        self.process = subprocess.Popen(['codex', 'app-server', '--stdio'],
+        self.process = subprocess.Popen(session_list_command(),
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                         stderr=subprocess.DEVNULL)
         self.selector = selectors.DefaultSelector()

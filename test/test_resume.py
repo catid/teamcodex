@@ -9,6 +9,10 @@ spec.loader.exec_module(resume)
 
 
 class ResumeTests(unittest.TestCase):
+    def test_session_listing_disables_mcp_startup(self):
+        self.assertEqual(resume.session_list_command(),
+                         ['codex', 'app-server', '--stdio', '-c', 'mcp_servers={}'])
+
     def test_options_and_literal_values(self):
         args = ['-m', 'gpt-6-astra', 'resume', '--last', '-C', '/tmp/project', '-c', 'title="--all"']
         options = resume.selection_options(args)
