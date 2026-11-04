@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 from errors import error_message
+from boot import systemd_unit
 import tempfile
 
 root = Path(__file__).resolve().parent.parent
@@ -26,32 +27,7 @@ def install_file(content, destination, mode='644'):
 if os.getuid() == 0:
     sys.exit(error_message('BOOT_USER_INVALID'))
 if sys.platform.startswith('linux'):
-    # systemd treats percent signs as specifiers, even inside quotes.
-    def quoted(value):
-        return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%') + '"'
-    unit = f'''[Unit]
-Description=TeamCodex Docker proxy
-Requires=docker.service
-After=docker.service network-online.target
-Wants=network-online.target
-StartLimitIntervalSec=0
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-User={user}
-Environment={quoted('HOME=' + str(user_home))}
-Environment={quoted('PATH=' + path)}
-ExecStart={quoted(root / 'teamcodex.sh')} serve --wait-timeout 120
-ExecStop={quoted(root / 'teamcodex.sh')} stop
-TimeoutStartSec=180
-TimeoutStopSec=30
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-'''
+    unit = systemd_unit(root, user, user_home, path)
     install_file(unit.encode(), '/etc/systemd/system/teamcodex.service')
     subprocess.run(['sudo', '-n', 'systemd-analyze', 'verify', '/etc/systemd/system/teamcodex.service'], check=True)
     subprocess.run(['sudo', '-n', 'systemctl', 'enable', 'docker.service'], check=True)
