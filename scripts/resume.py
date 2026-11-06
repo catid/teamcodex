@@ -191,7 +191,7 @@ def pick(threads):
             if key in ('\x1b', '\x03'):
                 return None
             if key in ('\n', '\r', curses.KEY_ENTER) and matches:
-                return matches[selected]['id']
+                return matches[selected]
             if key in (curses.KEY_UP, '\x10'):
                 selected = max(0, selected - 1)
             elif key in (curses.KEY_DOWN, '\x0e'):
@@ -207,13 +207,20 @@ def pick(threads):
     return curses.wrapper(screen)
 
 
-def with_session(args, session):
+def with_session(args, session, model_provider=None):
     # Keep option values/literal arguments intact; only remove selector flags.
     result, i = [], 0
+
+    def append_selection():
+        if isinstance(model_provider, str) and model_provider:
+            result.extend(['-c', f'model_provider={model_provider}'])
+        result.append(session)
+
     while i < len(args):
         arg = args[i]
         if arg == '--':
-            result.extend([session, *args[i:]])
+            append_selection()
+            result.extend(args[i:])
             return result
         if arg in VALUE_FLAGS:
             result.extend(args[i:i + 2])
@@ -222,7 +229,8 @@ def with_session(args, session):
         if arg not in {'--last', '--all', '--include-non-interactive'}:
             result.append(arg)
         i += 1
-    return [*result, session]
+    append_selection()
+    return result
 
 
 def main(args):
@@ -234,10 +242,10 @@ def main(args):
             threads = reader.threads(options)
         if not threads:
             raise RuntimeError('No saved sessions found. Try teamcodex resume --all for other directories.')
-        session = threads[0]['id'] if options['last'] else pick(threads)
-        if session is None:
+        selected = threads[0] if options['last'] else pick(threads)
+        if selected is None:
             return
-        args = with_session(args, session)
+        args = with_session(args, selected['id'], selected.get('modelProvider'))
     os.execvpe('codex', ['codex', *args], os.environ)
 
 

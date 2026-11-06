@@ -154,6 +154,7 @@ if (args.includes('env') && args.includes('--null')) {
     assert.ok(forwarded.includes('saved-openai-session'));
     assert.ok(!forwarded.includes('--last'));
     assert.ok(forwarded.includes('model_provider=teamcodex'));
+    assert.ok(forwarded.includes('model_provider=openai'));
     assert.ok(!forwarded.includes('--dangerously-bypass-approvals-and-sandbox'));
   }
   // Commands run from an SSH-fed script must leave subsequent stdin intact.

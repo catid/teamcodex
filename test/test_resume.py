@@ -48,9 +48,20 @@ class ResumeTests(unittest.TestCase):
 
     def test_last_uses_original_id_across_providers(self):
         with patch.object(resume, 'ThreadReader') as reader, patch.object(resume.os, 'execvpe') as execute:
-            reader.return_value.__enter__.return_value.threads.return_value = [{'id': 'old-openai-thread'}]
+            reader.return_value.__enter__.return_value.threads.return_value = [
+                {'id': 'old-openai-thread', 'modelProvider': 'openai'},
+            ]
             resume.main(['resume', '--last', '-c', 'model_provider=teamcodex'])
-            self.assertEqual(execute.call_args.args[1], ['codex', 'resume', '-c', 'model_provider=teamcodex', 'old-openai-thread'])
+            self.assertEqual(execute.call_args.args[1], [
+                'codex', 'resume', '-c', 'model_provider=teamcodex', '-c', 'model_provider=openai',
+                'old-openai-thread',
+            ])
+
+    def test_with_session_preserves_provider_before_literal_delimiter(self):
+        self.assertEqual(
+            resume.with_session(['resume', '--', 'prompt'], 'session', 'openai'),
+            ['resume', '-c', 'model_provider=openai', 'session', '--', 'prompt'],
+        )
 
     def test_no_sessions_never_silently_starts_a_new_conversation(self):
         with patch.object(resume, 'ThreadReader') as reader, patch.object(resume.os, 'execvpe') as execute:
